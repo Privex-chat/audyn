@@ -36,11 +36,11 @@ No account required to play. No API keys required for basic self-hosting.
 
 | Clip | Points |
 |------|--------|
-| 300ms | 100 |
-| 700ms | 80 |
+| 500ms | 100 |
+| 1.2s | 80 |
 | 2s | 60 |
 | 9s | 30 |
-| 15s | 10 |
+| 15s | 15 |
 | Missed | 0 |
 
 Points are awarded by clip stage in **Classic** mode. **Ticking Away** mode adds time-pressure decay: your score within each stage degrades the longer you wait to guess.
