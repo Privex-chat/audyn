@@ -9,9 +9,9 @@ Each round cycles through up to 5 audio clips of increasing length. A correct gu
 | | Easy | Normal | Hard |
 |---|---|---|---|
 | Clip durations | 2s, 5s, 10s, 15s, 20s | 0.3s, 0.7s, 2s, 9s, 15s | 0.1s, 0.3s, 0.7s, 1.5s, 3s |
-| Points per stage | 100, 80, 60, 30, 10 | 100, 80, 60, 30, 10 | 150, 120, 80, 40, 10 |
-| Ticking Away decay rate | 1.5 pts/sec | 2.0 pts/sec | 3.0 pts/sec |
-| Minimum score (% of base) | 50% | 40% | 30% |
+| Points per stage | 60, 45, 30, 20, 10 | 100, 80, 60, 30, 15 | 170, 130, 100, 60, 25 |
+| Ticking Away decay rate | 1.0 pts/sec | 2.0 pts/sec | 3.5 pts/sec |
+| Minimum score (% of base) | 60% | 40% | 25% |
 
 ## Game Modes
 
