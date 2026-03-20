@@ -1,0 +1,46 @@
+/**
+ * src/App.css (v4.0)
+ * Supplementary animations and global overrides.
+ * Most styles are now in index.css via CSS variables.
+ */
+
+/* Slot entry stagger animation */
+.slot-enter {
+  animation: slide-in-up 0.3s ease-out forwards;
+  opacity: 0;
+}
+
+.slot-enter:nth-child(1) { animation-delay: 0.04s; }
+.slot-enter:nth-child(2) { animation-delay: 0.08s; }
+.slot-enter:nth-child(3) { animation-delay: 0.12s; }
+.slot-enter:nth-child(4) { animation-delay: 0.16s; }
+.slot-enter:nth-child(5) { animation-delay: 0.20s; }
+
+/* Play button ring pulse */
+.play-ring {
+  transition: box-shadow 0.3s ease, border-color 0.3s ease;
+}
+.play-ring:hover {
+  box-shadow: 0 0 30px var(--color-neon-glow);
+}
+
+/* Dropdown animation */
+.dropdown-enter {
+  animation: slide-in-down 0.2s ease-out;
+}
+
+/* Touch-friendly input focus */
+input:focus,
+textarea:focus {
+  border-color: var(--color-neon) !important;
+  box-shadow: 0 0 0 1px var(--color-neon-glow);
+}
+
+/* Scrollable areas with hidden scrollbar on mobile */
+.hide-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}

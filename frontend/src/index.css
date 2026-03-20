@@ -1,0 +1,484 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Outfit:wght@300;400;500;700&family=Sora:wght@400;600;800&family=PxPlus IBM VGA8&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ═══════════════════════════════════════════════════════════════════
+   THEME SYSTEM — Noir (default), Light, CRT
+   Applied via data-theme attribute on <html>
+   ═══════════════════════════════════════════════════════════════════ */
+
+:root,
+:root[data-theme="noir"] {
+  --background: 0 0% 2%;
+  --foreground: 0 0% 98%;
+  --card: 0 0% 7%;
+  --card-foreground: 0 0% 98%;
+  --popover: 0 0% 7%;
+  --popover-foreground: 0 0% 98%;
+  --primary: 72 100% 50%;
+  --primary-foreground: 0 0% 0%;
+  --secondary: 0 0% 10%;
+  --secondary-foreground: 0 0% 98%;
+  --muted: 0 0% 10%;
+  --muted-foreground: 0 0% 63%;
+  --accent: 0 0% 12%;
+  --accent-foreground: 0 0% 98%;
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 0 0% 15%;
+  --input: 0 0% 15%;
+  --ring: 72 100% 50%;
+  --radius: 0.25rem;
+
+  /* Custom semantic tokens */
+  --color-bg: #050505;
+  --color-surface: #121212;
+  --color-surface-hl: #1E1E1E;
+  --color-neon: #CCFF00;
+  --color-neon-dim: #a3cc00;
+  --color-neon-glow: rgba(204, 255, 0, 0.3);
+  --color-neon-subtle: rgba(204, 255, 0, 0.08);
+  --color-text: #FAFAFA;
+  --color-text-secondary: #A1A1AA;
+  --color-text-muted: #52525B;
+  --color-text-dim: #3F3F46;
+  --color-border: #27272A;
+  --color-border-subtle: #18181B;
+  --color-magenta: #FF0099;
+  --color-gold: #FFD700;
+  --color-silver: #C0C0C0;
+  --color-bronze: #CD7F32;
+  --color-error: #EF4444;
+  --color-success: #22C55E;
+
+  --font-heading: 'Sora', sans-serif;
+  --font-body: 'Outfit', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  --scrollbar-bg: #050505;
+  --scrollbar-thumb: #27272A;
+  --selection-bg: rgba(204, 255, 0, 0.3);
+  --selection-color: #CCFF00;
+  --noise-opacity: 1;
+}
+
+:root[data-theme="light"] {
+  --background: 40 10% 96%;
+  --foreground: 0 0% 10%;
+  --card: 0 0% 100%;
+  --card-foreground: 0 0% 10%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 0 0% 10%;
+  --primary: 72 60% 33%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 0 0% 92%;
+  --secondary-foreground: 0 0% 10%;
+  --muted: 0 0% 92%;
+  --muted-foreground: 0 0% 40%;
+  --accent: 0 0% 95%;
+  --accent-foreground: 0 0% 10%;
+  --destructive: 0 84% 55%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 0 0% 85%;
+  --input: 0 0% 85%;
+  --ring: 72 60% 33%;
+
+  --color-bg: #F5F5F0;
+  --color-surface: #FFFFFF;
+  --color-surface-hl: #F0F0EB;
+  --color-neon: #88AA00;
+  --color-neon-dim: #6B8700;
+  --color-neon-glow: rgba(136, 170, 0, 0.2);
+  --color-neon-subtle: rgba(136, 170, 0, 0.06);
+  --color-text: #1A1A1A;
+  --color-text-secondary: #525252;
+  --color-text-muted: #737373;
+  --color-text-dim: #A3A3A3;
+  --color-border: #D4D4D4;
+  --color-border-subtle: #E5E5E5;
+  --color-magenta: #CC0077;
+  --color-gold: #B8860B;
+  --color-silver: #808080;
+  --color-bronze: #8B5E3C;
+  --color-error: #DC2626;
+  --color-success: #16A34A;
+
+  --scrollbar-bg: #F5F5F0;
+  --scrollbar-thumb: #D4D4D4;
+  --selection-bg: rgba(136, 170, 0, 0.25);
+  --selection-color: #3D5000;
+  --noise-opacity: 0;
+}
+
+:root[data-theme="crt"] {
+  --background: 0 0% 0%;
+  --foreground: 120 100% 50%;
+  --card: 0 0% 3%;
+  --card-foreground: 120 100% 50%;
+  --popover: 0 0% 3%;
+  --popover-foreground: 120 100% 50%;
+  --primary: 120 100% 50%;
+  --primary-foreground: 0 0% 0%;
+  --secondary: 0 0% 6%;
+  --secondary-foreground: 120 100% 50%;
+  --muted: 0 0% 6%;
+  --muted-foreground: 120 100% 30%;
+  --accent: 0 0% 8%;
+  --accent-foreground: 120 100% 50%;
+  --destructive: 0 100% 45%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 120 100% 15%;
+  --input: 120 100% 15%;
+  --ring: 120 100% 50%;
+
+  --color-bg: #000000;
+  --color-surface: #0A0A0A;
+  --color-surface-hl: #111111;
+  --color-neon: #00FF41;
+  --color-neon-dim: #00CC33;
+  --color-neon-glow: rgba(0, 255, 65, 0.35);
+  --color-neon-subtle: rgba(0, 255, 65, 0.08);
+  --color-text: #00FF41;
+  --color-text-secondary: #00CC33;
+  --color-text-muted: #007722;
+  --color-text-dim: #004411;
+  --color-border: #003311;
+  --color-border-subtle: #002208;
+  --color-magenta: #FF0066;
+  --color-gold: #00FF41;
+  --color-silver: #00CC33;
+  --color-bronze: #009922;
+  --color-error: #FF0000;
+  --color-success: #00FF41;
+
+  --font-heading: 'PxPlus IBM VGA8', monospace;
+  --font-body: 'PxPlus IBM VGA8', monospace;
+  --font-mono: 'PxPlus IBM VGA8', monospace;
+
+  --scrollbar-bg: #000000;
+  --scrollbar-thumb: #003311;
+  --selection-bg: rgba(0, 255, 65, 0.3);
+  --selection-color: #00FF41;
+  --noise-opacity: 0;
+}
+:root[data-theme="crt"] h1,
+:root[data-theme="crt"] h2 {
+  letter-spacing: 0.12em;
+}
+:root[data-theme="crt"] .glow-text {
+  text-shadow:
+    0 0 2px var(--color-neon),
+    0 0 8px var(--color-neon-glow);
+}
+/* ═══════════════════════════════════════════════════════════════════
+   BASE STYLES
+   ═══════════════════════════════════════════════════════════════════ */
+
+body {
+  margin: 0;
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  min-height: 100vh;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   CRT THEME EFFECTS
+   ═══════════════════════════════════════════════════════════════════ */
+
+[data-theme="crt"] body {
+  font-family: 'PxPlus IBM VGA8', monospace;
+  letter-spacing: 0.04em;
+  text-shadow: 0 0 1px var(--color-neon);
+}
+
+[data-theme="crt"] #root {
+  position: relative;
+  overflow: hidden;
+  border-radius: 12px;
+  box-shadow: inset 0 0 80px rgba(0, 255, 65, 0.08);
+}
+
+/* Scanline overlay */
+[data-theme="crt"] #root::before {
+  content: '';
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+  z-index: 9999;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.15) 2px,
+    rgba(0, 0, 0, 0.15) 4px
+  );
+}
+
+/* Subtle flicker */
+[data-theme="crt"] .crt-flicker {
+  animation: crt-flicker 0.08s infinite alternate;
+}
+
+@keyframes crt-flicker {
+  0%   { opacity: 0.97; }
+  50%  { opacity: 1; }
+  100% { opacity: 0.98; }
+}
+
+/* CRT text glow */
+[data-theme="crt"] h1,
+[data-theme="crt"] h2,
+[data-theme="crt"] h3,
+[data-theme="crt"] .neon-glow {
+  text-shadow: 0 0 8px rgba(0, 255, 65, 0.5), 0 0 20px rgba(0, 255, 65, 0.2);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   SCROLLBARS
+   ═══════════════════════════════════════════════════════════════════ */
+
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-bg);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 2px;
+}
+
+::selection {
+  background: var(--selection-bg);
+  color: var(--selection-color);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   UTILITY CLASSES
+   ═══════════════════════════════════════════════════════════════════ */
+
+.text-theme-neon {
+  color: var(--color-neon);
+}
+.text-theme-muted {
+  color: var(--color-text-muted);
+}
+.text-theme-secondary {
+  color: var(--color-text-secondary);
+}
+.text-theme-dim {
+  color: var(--color-text-dim);
+}
+.text-theme-main {
+  color: var(--color-text);
+}
+.bg-theme {
+  background-color: var(--color-bg);
+}
+.bg-theme-surface {
+  background-color: var(--color-surface);
+}
+.bg-theme-surface-hl {
+  background-color: var(--color-surface-hl);
+}
+.border-theme {
+  border-color: var(--color-border);
+}
+.border-theme-subtle {
+  border-color: var(--color-border-subtle);
+}
+.bg-theme-neon {
+  background-color: var(--color-neon);
+}
+.shadow-neon {
+  box-shadow: 0 0 20px var(--color-neon-glow);
+}
+.bg-neon-subtle {
+  background-color: var(--color-neon-subtle);
+}
+.border-neon-dim {
+  border-color: var(--color-neon-dim);
+}
+
+.font-heading {
+  font-family: var(--font-heading);
+}
+.font-body {
+  font-family: var(--font-body);
+}
+.font-mono {
+  font-family: var(--font-mono);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   ANIMATIONS
+   ═══════════════════════════════════════════════════════════════════ */
+
+@keyframes neon-flash {
+  0%   { box-shadow: 0 0 0 var(--color-neon-glow); }
+  50%  { box-shadow: 0 0 40px var(--color-neon-glow), 0 0 80px var(--color-neon-glow); }
+  100% { box-shadow: 0 0 0 var(--color-neon-glow); }
+}
+
+@keyframes score-pop {
+  0%   { transform: scale(1); }
+  50%  { transform: scale(1.4); }
+  100% { transform: scale(1); }
+}
+
+@keyframes screen-flash-green {
+  0%   { opacity: 0.7; }
+  100% { opacity: 0; }
+}
+
+@keyframes screen-flash-red {
+  0%   { opacity: 0.5; }
+  100% { opacity: 0; }
+}
+
+@keyframes countdown-ring {
+  from { stroke-dashoffset: 0; }
+  to   { stroke-dashoffset: 283; }
+}
+
+@keyframes sound-bar {
+  from { height: 3px; }
+  to   { height: 14px; }
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.8); }
+}
+
+@keyframes slide-in-up {
+  from { transform: translateY(20px); opacity: 0; }
+  to   { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes slide-in-down {
+  from { transform: translateY(-10px); opacity: 0; }
+  to   { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes card-enter {
+  from { transform: scale(0.9) translateY(20px); opacity: 0; }
+  to   { transform: scale(1) translateY(0); opacity: 1; }
+}
+
+@keyframes shimmer {
+  from { background-position: -200% center; }
+  to   { background-position: 200% center; }
+}
+
+.animate-neon-flash { animation: neon-flash 0.6s ease-out; }
+.animate-score-pop { animation: score-pop 0.3s ease-out; }
+.animate-slide-in-up { animation: slide-in-up 0.4s ease-out forwards; }
+.animate-slide-in-down { animation: slide-in-down 0.3s ease-out forwards; }
+.animate-card-enter { animation: card-enter 0.5s ease-out forwards; }
+.animate-pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
+
+/* Stagger children */
+.stagger-children > * {
+  opacity: 0;
+  animation: slide-in-up 0.3s ease-out forwards;
+}
+.stagger-children > *:nth-child(1) { animation-delay: 0.05s; }
+.stagger-children > *:nth-child(2) { animation-delay: 0.1s; }
+.stagger-children > *:nth-child(3) { animation-delay: 0.15s; }
+.stagger-children > *:nth-child(4) { animation-delay: 0.2s; }
+.stagger-children > *:nth-child(5) { animation-delay: 0.25s; }
+.stagger-children > *:nth-child(6) { animation-delay: 0.3s; }
+.stagger-children > *:nth-child(7) { animation-delay: 0.35s; }
+.stagger-children > *:nth-child(8) { animation-delay: 0.4s; }
+
+/* Phase transition */
+.phase-enter {
+  animation: slide-in-up 0.35s ease-out;
+}
+
+/* Score bump */
+.score-bump {
+  animation: score-pop 0.3s ease-out;
+}
+
+/* Neon glow on text */
+.neon-glow {
+  text-shadow: 0 0 10px var(--color-neon-glow), 0 0 30px var(--color-neon-glow);
+}
+
+/* Noise overlay (Noir only) */
+.noise-bg::before {
+  content: '';
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  opacity: var(--noise-opacity, 1);
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+  z-index: 0;
+}
+
+.noise-bg > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Button tactile states */
+.btn-tactile {
+  transition: all 0.15s ease;
+}
+.btn-tactile:active {
+  transform: scale(0.95);
+}
+
+/* Screen flash overlays */
+.screen-flash-green {
+  position: fixed;
+  inset: 0;
+  background: var(--color-neon);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 9998;
+  animation: screen-flash-green 0.3s ease-out forwards;
+}
+
+.screen-flash-red {
+  position: fixed;
+  inset: 0;
+  background: #EF4444;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 9998;
+  animation: screen-flash-red 0.15s ease-out forwards;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   SHADCN OVERRIDES (debug wrapper)
+   ═══════════════════════════════════════════════════════════════════ */
+
+@layer base {
+  [data-debug-wrapper="true"] {
+    display: contents !important;
+  }
+}

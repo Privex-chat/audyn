@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="theme-color" content="#050505" />
+        <meta name="description" content="How well do you know your Spotify playlists? Guess songs from tiny audio clips." />
+        <meta property="og:title" content="Audyn — Guess the Song" />
+        <meta property="og:description" content="Paste a playlist. Hear a clip. Name the track." />
+        <meta property="og:type" content="website" />
+        <meta name="twitter:card" content="summary" />
+
+        <!-- PWA -->
+        <link rel="manifest" href="/manifest.json" />
+        <meta name="mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+        <meta name="apple-mobile-web-app-title" content="Audyn" />
+
+        <!-- Favicon / Icons -->
+        <!-- Replace these once you generate icons from your logo PNG -->
+        <link rel="icon" href="/favicon.ico" sizes="48x48" />
+        <link rel="icon" type="image/png" sizes="32x32" href="/icons/icon-32.png" />
+        <link rel="icon" type="image/png" sizes="16x16" href="/icons/icon-16.png" />
+        <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
+        <link rel="apple-touch-icon" sizes="152x152" href="/icons/icon-152.png" />
+        <link rel="apple-touch-icon" sizes="144x144" href="/icons/icon-144.png" />
+
+        <!-- Fonts -->
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@600&display=swap" rel="stylesheet" />
+
+        <title>Audyn — Guess the Song</title>
+        <script>window.addEventListener("error",function(e){if(e.error instanceof DOMException&&e.error.name==="DataCloneError"&&e.message&&e.message.includes("PerformanceServerTiming")){e.stopImmediatePropagation();e.preventDefault()}},true);</script>
+    </head>
+    <body>
+        <noscript>You need to enable JavaScript to run this app.</noscript>
+        <div id="root"></div>
+        <script>
+            // Register PWA service worker
+            if ('serviceWorker' in navigator) {
+                window.addEventListener('load', function() {
+                    navigator.serviceWorker.register('/service-worker.js')
+                        .then(function(reg) {
+                            console.log('SW registered:', reg.scope);
+                        })
+                        .catch(function(err) {
+                            console.log('SW registration failed:', err);
+                        });
+                });
+            }
+        </script>
+        <!-- Cloudflare Web Analytics -->
+        <script defer src="https://static.cloudflareinsights.com/beacon.min.js"
+                data-cf-beacon='{"token": "token-here"}'></script>
+    </body>
+</html>
