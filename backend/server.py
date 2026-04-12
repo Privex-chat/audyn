@@ -166,7 +166,7 @@ async def lifespan(app):
 
     async def _guest_cleanup_loop():
         while True:
-            await asyncio.sleep(86400)  # run once per 24 hours
+            await asyncio.sleep(86400)
             try:
                 async with get_conn() as conn:
                     result = await conn.execute(
@@ -181,7 +181,7 @@ async def lifespan(app):
                 logger.warning(f"Guest cleanup failed: {e}")
 
     asyncio.create_task(_guest_cleanup_loop())
-    logger.info("Audyn API v3.0.2 started")
+    logger.info("Audyn API v3.0.3 started")
     yield
     await _audio_http_client.aclose()
     await close_db()
@@ -189,7 +189,7 @@ async def lifespan(app):
 
 app = FastAPI(
     title="Audyn API",
-    version="3.0.2",
+    version="3.0.3",
     lifespan=lifespan,
     docs_url=None,
     redoc_url=None,
@@ -445,6 +445,17 @@ async def batch_fetch_previews(http, track_ids):
     return results
 
 async def fetch_playlist_embed_only(http, playlist_id):
+    """
+    Fetch playlist data from Spotify's public embed page.
+
+    Returns a dict with two track lists:
+      - 'tracks'        — user-facing: only tracks that have a preview URL right now
+      - 'tracks_for_db' — all playable tracks, including those without a preview URL,
+                          so the preview_worker can find and retry them later
+
+    Callers must use 'tracks_for_db' when writing to the database and 'tracks'
+    when returning data to the frontend.
+    """
     resp = await http.get(
         f"https://open.spotify.com/embed/playlist/{playlist_id}",
         headers=BROWSER_HEADERS,
@@ -465,45 +476,61 @@ async def fetch_playlist_embed_only(http, playlist_id):
     )
     if not entity or not entity.get("trackList"):
         raise HTTPException(status_code=404, detail="Playlist empty.")
+
     playlist_name = entity.get("name", "Unknown Playlist")
     cover_sources = entity.get("coverArt", {}).get("sources", [])
     playlist_image = cover_sources[0]["url"] if cover_sources else ""
     track_list = entity.get("trackList", [])
     total_stated = entity.get("trackCount", len(track_list))
-    tracks = []
+
+    # FIX: build two separate lists so that all playable tracks (even those
+    # without a preview URL) are persisted to the DB for the worker to retry,
+    # while only tracks with a preview URL are returned to the user.
+    tracks = []          # user-facing: preview URL required
+    tracks_for_db = []   # all playable tracks, preview_url may be ""
+
     for t in track_list:
+        is_playable = t.get("isPlayable", False)
+        if not is_playable:
+            continue
+
         preview = t.get("audioPreview") or {}
         url = preview.get("url", "")
-        if not url or not t.get("isPlayable", False):
-            continue
+
         track_id = ""
         uri = t.get("uri", "")
         if uri.startswith("spotify:track:"):
             track_id = uri.split(":")[-1]
-        tracks.append(
-            {
-                "id": track_id or t.get("uid", ""),
-                "name": t.get("title", "Unknown Track"),
-                "artist": clean_whitespace(t.get("subtitle", "Unknown Artist")),
-                "preview_url": url,
-                "album_image": "",
-                "album_name": "",
-                "duration_ms": 0,
-                "explicit": False,
-                "popularity": 0,
-            }
-        )
-    skipped = sum(
-        1 for t in track_list
-        if not (t.get("audioPreview") or {}).get("url", "")
-    )
+
+        track_obj = {
+            "id": track_id or t.get("uid", ""),
+            "name": t.get("title", "Unknown Track"),
+            "artist": clean_whitespace(t.get("subtitle", "Unknown Artist")),
+            "preview_url": url,
+            "album_image": "",
+            "album_name": "",
+            "duration_ms": 0,
+            "explicit": False,
+            "popularity": 0,
+        }
+        tracks_for_db.append(track_obj)
+        if url:
+            tracks.append(track_obj)
+
+    # Count tracks that are playable but have no preview yet (queued for retry)
+    pending_retry = len(tracks_for_db) - len(tracks)
+    # Count tracks that are not playable at all (local files, region-locked)
+    skipped = sum(1 for t in track_list if not t.get("isPlayable", False))
+
     return {
         "name": playlist_name,
         "image": playlist_image,
         "tracks": tracks,
+        "tracks_for_db": tracks_for_db,
         "total_tracks": len(tracks),
         "total_in_playlist": total_stated,
         "skipped_no_preview": skipped,
+        "pending_preview_retry": pending_retry,
     }
 
 async def fetch_playlist(playlist_id: str, force_refresh: bool = False) -> dict:
@@ -545,11 +572,18 @@ async def fetch_playlist(playlist_id: str, force_refresh: bool = False) -> dict:
         token = await get_api_token(http)
 
         if not token:
+            # No-credentials path: use embed only.
+            # FIX: use tracks_for_db (all playable tracks, even those without a
+            # preview URL) when saving to the DB so the worker can find them.
+            # The user-facing result still only contains tracks with preview URLs.
             result = await fetch_playlist_embed_only(http, playlist_id)
+            save_result = dict(result)
+            save_result["tracks"] = save_result.pop("tracks_for_db", save_result["tracks"])
             try:
-                await save_playlist_to_db(playlist_id, result)
+                await save_playlist_to_db(playlist_id, save_result)
             except Exception as e:
                 logger.warning(f"DB save failed: {e}")
+            result.pop("tracks_for_db", None)
             memory_cache.set(playlist_id, result)
             return result
 
@@ -558,11 +592,16 @@ async def fetch_playlist(playlist_id: str, force_refresh: bool = False) -> dict:
         )
 
         if not all_meta:
+            # API metadata fetch failed; fall back to embed.
+            # Same FIX as above: save tracks_for_db so the worker can retry.
             result = await fetch_playlist_embed_only(http, playlist_id)
+            save_result = dict(result)
+            save_result["tracks"] = save_result.pop("tracks_for_db", save_result["tracks"])
             try:
-                await save_playlist_to_db(playlist_id, result)
+                await save_playlist_to_db(playlist_id, save_result)
             except Exception as e:
                 logger.warning(f"DB save failed: {e}")
+            result.pop("tracks_for_db", None)
             memory_cache.set(playlist_id, result)
             return result
 
@@ -620,7 +659,7 @@ async def fetch_playlist(playlist_id: str, force_refresh: bool = False) -> dict:
                     "name": m["name"],
                     "artist": m["artist"],
                     "preview_url": preview_url,
-                    "album_image": "",  # loaded on demand via /tracks/art
+                    "album_image": "",
                     "album_name": m["album_name"],
                     "duration_ms": m.get("duration_ms", 0),
                     "explicit": m.get("explicit", False),
@@ -645,7 +684,7 @@ async def fetch_playlist(playlist_id: str, force_refresh: bool = False) -> dict:
                 "id": tid,
                 "name": m["name"],
                 "artist": m["artist"],
-                "preview_url": embed_previews.get(tid, ""),  # "" is intentional for pending
+                "preview_url": embed_previews.get(tid, ""),
                 "album_image": m.get("album_image", ""),
                 "album_name": m["album_name"],
                 "duration_ms": m.get("duration_ms", 0),

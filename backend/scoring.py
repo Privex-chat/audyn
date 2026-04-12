@@ -84,6 +84,9 @@ class SessionCompleteRequest(BaseModel):
     playlist_track_count: int = 0
     playlist_id: str = ""
     session_id: str | None = None
+    # FIX: accept the player's local hour (0–23) so night_owl uses their local
+    # clock rather than the server's UTC time. Matches the API docs.
+    client_hour: int | None = None
 
 @score_router.post("/submit")
 async def submit_score(
@@ -163,7 +166,7 @@ async def submit_score(
             raise
         except Exception as e:
             logger.warning(f"Daily challenge verification failed: {e}")
-            req.is_daily = False  # non-fatal: treat as non-daily rather than blocking
+            req.is_daily = False
 
     if not req.correct:
         score_data = {"base_score": 0, "time_penalty": 0, "final_score": 0}
@@ -354,6 +357,7 @@ async def session_complete(
             playlist_id=req.playlist_id,
             session_id=req.session_id,
             game_mode=req.game_mode,
+            client_hour=req.client_hour,
         )
     except Exception as e:
         logger.warning(f"Session achievement check failed: {e}")

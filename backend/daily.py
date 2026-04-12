@@ -12,34 +12,6 @@ logger = logging.getLogger(__name__)
 
 daily_router = APIRouter(prefix="/api/daily", tags=["daily"])
 
-async def update_daily_streak(user_id):
-    today = datetime.now(timezone.utc).date()
-    yesterday = today - timedelta(days=1)
-
-    async with get_conn() as conn:
-        row = await conn.fetchrow(
-            "SELECT daily_streak, last_daily_date FROM users WHERE id = $1",
-            user_id,
-        )
-        if not row:
-            return
-
-        last_date = row["last_daily_date"]
-        current_streak = row["daily_streak"] or 0
-
-        if last_date == today:
-            return
-        elif last_date == yesterday:
-            new_streak = current_streak + 1
-        else:
-            new_streak = 1
-
-        await conn.execute(
-            "UPDATE users SET daily_streak = $1, last_daily_date = $2 WHERE id = $3",
-            new_streak, today, user_id,
-        )
-        logger.info(f"Daily streak updated: user={user_id} streak={new_streak}")
-
 DAILY_PLAYLIST_IDS = [
     "37i9dQZF1DXcBWIGoYBM5M",  # Today's Top Hits
     "37i9dQZF1DX0XUsuxWHRQd",  # RapCaviar
@@ -168,9 +140,10 @@ async def get_daily_challenge(user=Depends(get_current_user)):
             track_ids,
         )
 
+    # FIX: use pop() so track_id key is removed and only id remains in the response
     def map_track(r):
         d = dict(r)
-        d["id"] = d.get("track_id", "")
+        d["id"] = d.pop("track_id", "")
         return d
 
     tracks_by_id = {r["track_id"]: map_track(r) for r in rows}

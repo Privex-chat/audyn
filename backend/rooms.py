@@ -27,7 +27,7 @@ class CreateRoomRequest(BaseModel):
 class UpdateProgressRequest(BaseModel):
     clip_stage: int | None = None
     elapsed_seconds: float | None = None
-    tracks_completed: int | None = None  # how many tracks this player has finished
+    tracks_completed: int | None = None
 
 @rooms_router.post("/create")
 async def create_room(req: CreateRoomRequest, user=Depends(require_user)):
@@ -72,6 +72,8 @@ async def create_room(req: CreateRoomRequest, user=Depends(require_user)):
             req.difficulty, req.game_mode, req.guess_mode, [],
         )
 
+        # Use a seeded RNG derived from the room ID so both players always get
+        # the same deterministic track order.
         rng = random.Random(str(room_id))
         all_ids = [r["track_id"] for r in tracks]
         rng.shuffle(all_ids)
@@ -83,19 +85,19 @@ async def create_room(req: CreateRoomRequest, user=Depends(require_user)):
 
         def map_track(r):
             d = dict(r)
-            d["id"] = d.pop("track_id", d.get("id"))
+            d["id"] = d.pop("track_id", d.get("id", ""))
             return d
 
         tracks_by_id = {r["track_id"]: map_track(r) for r in tracks}
+        # FIX: return tracks in the seeded-deterministic order from track_ids.
+        # Removed the unseeded random.shuffle that was producing a different
+        # order for the host vs the joining guest, desynchronising the game.
         ordered_tracks = [tracks_by_id[tid] for tid in selected if tid in tracks_by_id]
-
-        response_tracks = ordered_tracks.copy()
-        random.shuffle(response_tracks)
 
     return {
         "room_code": code,
         "room_id": str(room_id),
-        "tracks": response_tracks,
+        "tracks": ordered_tracks,
     }
 
 @rooms_router.post("/join/{room_code}")
@@ -130,19 +132,18 @@ async def join_room(room_code: str, user=Depends(require_user)):
 
         def map_track(r):
             d = dict(r)
-            d["id"] = d.pop("track_id", d.get("id"))
+            d["id"] = d.pop("track_id", d.get("id", ""))
             return d
 
         tracks_by_id = {r["track_id"]: map_track(r) for r in tracks}
+        # FIX: preserve the exact seeded order stored in room["track_ids"] so
+        # the guest sees tracks in the same sequence as the host.
         ordered_tracks = [tracks_by_id[tid] for tid in room["track_ids"] if tid in tracks_by_id]
-
-        response_tracks = ordered_tracks.copy()
-        random.shuffle(response_tracks)
 
     return {
         "room_code": room["room_code"],
         "room_id": str(room["id"]),
-        "tracks": response_tracks,
+        "tracks": ordered_tracks,
         "difficulty": room["difficulty"],
         "game_mode": room["game_mode"],
         "guess_mode": room["guess_mode"],

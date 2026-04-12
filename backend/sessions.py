@@ -38,18 +38,43 @@ async def start_session(req: StartSessionRequest, user=Depends(require_user)):
     session_id = secrets.token_urlsafe(16)
 
     async with get_conn() as conn:
+        # FIX: only include tracks that exist in the DB and have a playable
+        # preview URL. Silently excluding invalid/unplayable track IDs rather
+        # than building a session around tracks that can't be played.
         rows = await conn.fetch(
-            "SELECT track_id, name, artist FROM tracks WHERE track_id = ANY($1)",
+            """
+            SELECT track_id, name, artist
+            FROM tracks
+            WHERE track_id = ANY($1)
+              AND preview_url IS NOT NULL
+              AND preview_url != ''
+              AND preview_unavailable = FALSE
+            """,
             req.track_ids,
         )
         track_map = {r["track_id"]: r for r in rows}
 
+        valid_ids = [tid for tid in req.track_ids if tid in track_map]
+
+        if not valid_ids:
+            raise HTTPException(
+                status_code=400,
+                detail="None of the provided track IDs are playable",
+            )
+
+        invalid_count = len(req.track_ids) - len(valid_ids)
+        if invalid_count > 0:
+            logger.warning(
+                f"Session start: {invalid_count} of {len(req.track_ids)} track(s) "
+                f"excluded (no preview URL or not in DB) for user={user['id']}"
+            )
+
         tracks_json: dict[str, dict] = {}
-        for i, tid in enumerate(req.track_ids):
-            meta = track_map.get(tid)
+        for i, tid in enumerate(valid_ids):
+            meta = track_map[tid]
             tracks_json[tid] = {
-                "name": meta["name"] if meta else "",
-                "artist": meta["artist"] if meta else "",
+                "name": meta["name"],
+                "artist": meta["artist"],
                 "position": i,
                 "answered": False,
                 "current_stage": 0,
@@ -87,6 +112,6 @@ async def start_session(req: StartSessionRequest, user=Depends(require_user)):
 
     logger.info(
         f"Session started: session_id={session_id} user={user['id']} "
-        f"tracks={len(req.track_ids)} mode={req.game_mode}/{req.guess_mode}"
+        f"tracks={len(valid_ids)} mode={req.game_mode}/{req.guess_mode}"
     )
     return {"session_id": session_id}

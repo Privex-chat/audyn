@@ -8,4 +8,4 @@ python-jose[cryptography]==3.4.0
 python-multipart==0.0.20
 email-validator==2.2.0
 better-profanity==0.7.0
-cloudinary
+cloudinary==1.41.0

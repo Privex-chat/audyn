@@ -106,6 +106,9 @@ async def save_playlist(playlist_id: str, result: dict):
                 if not track_id:
                     continue
 
+                # FIX: preview_url uses a CASE guard so recovered preview URLs
+                # written by the preview_worker are never overwritten with an
+                # empty string when the playlist is re-fetched.
                 await conn.execute("""
                     INSERT INTO tracks (
                         track_id, name, artist, preview_url, album_name, album_image,
@@ -115,7 +118,7 @@ async def save_playlist(playlist_id: str, result: dict):
                     ON CONFLICT (track_id) DO UPDATE SET
                         name        = $2,
                         artist      = $3,
-                        preview_url = $4,
+                        preview_url = CASE WHEN $4 != '' THEN $4 ELSE tracks.preview_url END,
                         album_name  = $5,
                         album_image = CASE WHEN $6 != '' THEN $6 ELSE tracks.album_image END,
                         duration_ms = $7,

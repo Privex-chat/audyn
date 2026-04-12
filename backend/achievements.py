@@ -97,8 +97,10 @@ async def check_achievements(
     playlist_id: str = "",
     session_id: str | None = None,
     game_mode: str = "classic",
+    # FIX: accept the player's local hour so night_owl uses their local time,
+    # not the server's UTC time. Falls back to UTC if not provided.
+    client_hour: int | None = None,
 ):
-
     if not user_id:
         return []
 
@@ -180,8 +182,10 @@ async def check_achievements(
             if await award_badge(conn, user_id, "top_10"):
                 newly_awarded.append("top_10")
 
-        server_hour = datetime.now(timezone.utc).hour
-        if 2 <= server_hour < 4:
+        # FIX: use the client's local hour when provided so the badge reflects
+        # the player's actual local time rather than the server's UTC clock.
+        hour_to_check = client_hour if client_hour is not None else datetime.now(timezone.utc).hour
+        if 2 <= hour_to_check < 4:
             if await award_badge(conn, user_id, "night_owl"):
                 newly_awarded.append("night_owl")
 
