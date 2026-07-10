@@ -30,6 +30,12 @@ from db_playlists import (
     get_album_art_from_db,
     save_album_art_to_db,
 )
+from preview_store import (
+    get_missing_preview_track_ids,
+    mark_recovered,
+    mark_failed,
+    mark_unavailable,
+)
 from auth import auth_router, get_current_user, require_user
 from scoring import score_router
 from leaderboard import lb_router
@@ -576,6 +582,108 @@ async def fetch_playlist_embed_only(http, playlist_id):
         "pending_preview_retry": pending_retry,
     }
 
+# ─── On-demand preview fill ─────────────────────────────────────────
+# When a playlist is served with tracks missing preview URLs, recover them in
+# the background within minutes instead of waiting for the preview worker's
+# 30-minute cycle (hours for a big playlist). The worker stays as the janitor
+# for tracks these fills never reach (process restarts, rate-limit aborts).
+
+_preview_fill_tasks: dict[str, asyncio.Task] = {}
+# Per-playlist cooldown so repeated cache hits don't re-scan the same playlist.
+_preview_fill_cooldown = TTLCache(max_size=500, ttl_seconds=1800)
+# Global scrape concurrency across ALL fills — this is what keeps a burst of
+# fresh playlists from hammering Spotify's embed endpoint.
+# ponytail: per-process guards; two API processes can duplicate a fill, which
+# only costs redundant scrapes (writes are idempotent).
+_preview_fill_semaphore = asyncio.Semaphore(3)
+PREVIEW_FILL_MAX_TRACKS = 400
+PREVIEW_FILL_SPACING = 0.4  # seconds a slot is held after each request
+
+def _start_preview_fill(playlist_id: str):
+    """Kick off a background fill for a playlist, at most once per cooldown."""
+    if playlist_id in _preview_fill_tasks or _preview_fill_cooldown.get(playlist_id):
+        return
+    _preview_fill_cooldown.set(playlist_id, True)
+    task = asyncio.create_task(_run_preview_fill(playlist_id))
+    _preview_fill_tasks[playlist_id] = task
+    task.add_done_callback(lambda _t: _preview_fill_tasks.pop(playlist_id, None))
+
+async def _run_preview_fill(playlist_id: str):
+    try:
+        track_ids = await get_missing_preview_track_ids(
+            playlist_id, limit=PREVIEW_FILL_MAX_TRACKS
+        )
+        if not track_ids:
+            return
+        logger.info(f"Preview fill: {len(track_ids)} tracks queued for {playlist_id}")
+
+        recovered: dict[str, str] = {}
+        failed: list[str] = []
+        unavailable: list[str] = []
+        rate_limited = False
+
+        async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as http:
+
+            async def fetch_one(tid: str):
+                nonlocal rate_limited
+                if rate_limited:
+                    return
+                async with _preview_fill_semaphore:
+                    if rate_limited:
+                        return
+                    try:
+                        resp = await http.get(
+                            f"https://open.spotify.com/embed/track/{tid}",
+                            headers=BROWSER_HEADERS,
+                        )
+                    except Exception:
+                        failed.append(tid)
+                        return
+                    if resp.status_code == 429:
+                        # Leave the rest untouched for the worker/next fill.
+                        rate_limited = True
+                        return
+                    if resp.status_code == 404:
+                        unavailable.append(tid)
+                        return
+                    if resp.status_code != 200:
+                        failed.append(tid)
+                        return
+                    entity = (
+                        parse_embed_next_data(resp.text)
+                        .get("props", {})
+                        .get("pageProps", {})
+                        .get("state", {})
+                        .get("data", {})
+                        .get("entity", {})
+                    )
+                    url = (entity.get("audioPreview") or {}).get("url", "")
+                    if url:
+                        recovered[tid] = url
+                        preview_cache.set(f"preview:{tid}", url)
+                    else:
+                        failed.append(tid)
+                    await asyncio.sleep(PREVIEW_FILL_SPACING)
+
+            await asyncio.gather(*(fetch_one(tid) for tid in track_ids))
+
+        await mark_recovered(recovered)
+        await mark_unavailable(unavailable)
+        await mark_failed(failed)  # only ever contains tracks actually attempted
+
+        if recovered:
+            # Serve the fuller DB view on the next request for this playlist.
+            memory_cache.delete(playlist_id)
+
+        status = "aborted on 429" if rate_limited else "complete"
+        logger.info(
+            f"Preview fill {status} for {playlist_id}: "
+            f"{len(recovered)} recovered, {len(failed)} failed, "
+            f"{len(unavailable)} unavailable of {len(track_ids)} queued"
+        )
+    except Exception as e:
+        logger.warning(f"Preview fill failed for {playlist_id}: {e}")
+
 # Single-flight guard: concurrent requests for the same uncached playlist
 # share one Spotify fetch instead of each launching their own (cache stampede).
 _playlist_fetches: dict[str, asyncio.Task] = {}
@@ -590,6 +698,9 @@ async def _finalize_and_save(playlist_id: str, result: dict, tracks_for_db: list
         await save_playlist_to_db(playlist_id, save_result)
     except Exception as e:
         logger.warning(f"DB save failed: {e}")
+
+    # Recover missing previews in the background; no-op if nothing is missing.
+    _start_preview_fill(playlist_id)
 
     try:
         db_result = await load_playlist_from_db(playlist_id)
@@ -630,6 +741,9 @@ async def fetch_playlist(playlist_id: str, force_refresh: bool = False) -> dict:
             db_result = await load_playlist_from_db(playlist_id)
             if db_result:
                 memory_cache.set(playlist_id, db_result)
+                # A cached playlist can still have tracks awaiting previews
+                # (e.g. the process restarted mid-fill) — resume recovery.
+                _start_preview_fill(playlist_id)
                 return db_result
         except Exception as e:
             logger.warning(f"DB load failed: {e}")
