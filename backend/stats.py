@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Query, Depends
 
@@ -10,15 +10,30 @@ logger = logging.getLogger(__name__)
 
 stats_router = APIRouter(prefix="/api", tags=["stats"])
 
+_cache = {"value": 0, "expires": 0.0}
+
 @stats_router.get("/stats/activity")
 async def get_activity():
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    now = datetime.now(timezone.utc)
+
+    if now.timestamp() < _cache["expires"]:
+        return {"players_today": _cache["value"]}
+
+    cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0)
     async with get_conn() as conn:
         count = await conn.fetchval(
-            "SELECT COUNT(DISTINCT user_id) FROM scores WHERE guessed_at >= $1",
+            """
+            SELECT COUNT(DISTINCT COALESCE(user_id, session_id))
+            FROM game_sessions
+            WHERE created_at >= $1
+            """,
             cutoff,
         )
-    return {"players_today": count or 0}
+
+    result = count or 0
+    _cache["value"] = result
+    _cache["expires"] = now.timestamp() + 30
+    return {"players_today": result}
 
 @stats_router.get("/stats/recent-playlists")
 async def get_recent_playlists(

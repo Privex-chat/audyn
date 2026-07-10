@@ -43,9 +43,13 @@ export default function HomePage({
   const [featuredData, setFeaturedData] = useState([]);
 
   useEffect(() => {
-    api.get('/stats/activity')
-      .then((res) => setPlayersToday(res.data.players_today))
-      .catch(() => {});
+    const fetchPlayers = () =>
+      api.get('/stats/activity')
+        .then((res) => setPlayersToday(res.data.players_today))
+        .catch(() => {});
+    fetchPlayers();
+    const interval = setInterval(fetchPlayers, 30000);
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {

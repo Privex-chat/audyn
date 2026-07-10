@@ -132,6 +132,10 @@ CREATE INDEX IF NOT EXISTS idx_game_sessions_user_daily
     ON game_sessions(user_id, is_daily, created_at)
     WHERE is_daily = TRUE;
 
+-- Fast lookup for "players today" query on created_at
+CREATE INDEX IF NOT EXISTS idx_game_sessions_created_at
+    ON game_sessions(created_at);
+
 -- Used by periodic cleanup: DELETE FROM game_sessions WHERE expires_at < NOW() - INTERVAL '1 day';
 CREATE INDEX IF NOT EXISTS idx_game_sessions_expires
     ON game_sessions(expires_at);
