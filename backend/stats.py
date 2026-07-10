@@ -21,9 +21,11 @@ async def get_activity():
 
     cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0)
     async with get_conn() as conn:
+        # user_id is UUID and session_id is VARCHAR — COALESCE needs one type,
+        # otherwise Postgres rejects the query (42804) and this endpoint 500s.
         count = await conn.fetchval(
             """
-            SELECT COUNT(DISTINCT COALESCE(user_id, session_id))
+            SELECT COUNT(DISTINCT COALESCE(user_id::text, session_id))
             FROM game_sessions
             WHERE created_at >= $1
             """,
