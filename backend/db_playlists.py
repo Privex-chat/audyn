@@ -74,9 +74,36 @@ async def load_playlist(playlist_id: str) -> dict | None:
         }
 
 async def save_playlist(playlist_id: str, result: dict):
-    tracks = result.get("tracks", [])
+    # Dedupe by track_id (playlists can contain the same song twice; a batch
+    # upsert would otherwise error on "row affected a second time").
+    seen: set[str] = set()
+    tracks = []
+    for t in result.get("tracks", []):
+        tid = t.get("id", "")
+        if tid and tid not in seen:
+            seen.add(tid)
+            tracks.append(t)
     if not tracks:
         return
+
+    ids         = [t["id"] for t in tracks]
+    names       = [t.get("name", "") for t in tracks]
+    artists     = [t.get("artist", "") for t in tracks]
+    previews    = [t.get("preview_url", "") for t in tracks]
+    album_names = [t.get("album_name", "") for t in tracks]
+    album_imgs  = [t.get("album_image", "") for t in tracks]
+    durations   = [t.get("duration_ms", 0) or 0 for t in tracks]
+    explicits   = [bool(t.get("explicit", False)) for t in tracks]
+    populars    = [t.get("popularity", 0) or 0 for t in tracks]
+
+    # A fetch is "complete" when playable + skipped covers Spotify's own total.
+    # Degraded fetches (429 mid-pagination, embed-only fallback capped at ~100
+    # tracks) come back smaller — replacing the link table from one of those
+    # would permanently shrink the playlist, which the preview worker can never
+    # heal (it only sees tracks reachable through playlist_tracks).
+    total_stated = result.get("total_in_playlist", 0) or 0
+    skipped = result.get("skipped_no_preview", 0) or 0
+    fetch_complete = total_stated > 0 and (len(tracks) + skipped) >= total_stated
 
     async with get_conn() as conn:
         async with conn.transaction():
@@ -93,57 +120,71 @@ async def save_playlist(playlist_id: str, result: dict):
                 playlist_id,
                 result.get("name", ""),
                 result.get("image", ""),
-                result.get("total_in_playlist", 0),
-                result.get("skipped_no_preview", 0),
+                total_stated,
+                skipped,
             )
 
-            await conn.execute(
-                "DELETE FROM playlist_tracks WHERE playlist_id = $1", playlist_id
-            )
-
-            for i, t in enumerate(tracks):
-                track_id = t.get("id", "")
-                if not track_id:
-                    continue
-
-                # FIX: preview_url uses a CASE guard so recovered preview URLs
-                # written by the preview_worker are never overwritten with an
-                # empty string when the playlist is re-fetched.
-                await conn.execute("""
-                    INSERT INTO tracks (
-                        track_id, name, artist, preview_url, album_name, album_image,
-                        duration_ms, explicit, popularity, updated_at
-                    )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
-                    ON CONFLICT (track_id) DO UPDATE SET
-                        name        = $2,
-                        artist      = $3,
-                        preview_url = CASE WHEN $4 != '' THEN $4 ELSE tracks.preview_url END,
-                        album_name  = $5,
-                        album_image = CASE WHEN $6 != '' THEN $6 ELSE tracks.album_image END,
-                        duration_ms = $7,
-                        explicit    = $8,
-                        popularity  = $9,
-                        updated_at  = NOW()
-                """,
-                    track_id,
-                    t.get("name", ""),
-                    t.get("artist", ""),
-                    t.get("preview_url", ""),
-                    t.get("album_name", ""),
-                    t.get("album_image", ""),
-                    t.get("duration_ms", 0),
-                    t.get("explicit", False),
-                    t.get("popularity", 0),
+            # Single batched upsert for all tracks. The CASE guards keep
+            # preview URLs and album art recovered by the preview_worker from
+            # being overwritten with empty strings on re-fetch.
+            await conn.execute("""
+                INSERT INTO tracks (
+                    track_id, name, artist, preview_url, album_name, album_image,
+                    duration_ms, explicit, popularity, updated_at
                 )
+                SELECT t.track_id, t.name, t.artist, t.preview_url, t.album_name, t.album_image,
+                       t.duration_ms, t.explicit, t.popularity, NOW()
+                FROM unnest(
+                    $1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[],
+                    $7::int[], $8::bool[], $9::int[]
+                ) AS t(track_id, name, artist, preview_url, album_name, album_image,
+                       duration_ms, explicit, popularity)
+                ON CONFLICT (track_id) DO UPDATE SET
+                    name        = EXCLUDED.name,
+                    artist      = EXCLUDED.artist,
+                    preview_url = CASE WHEN EXCLUDED.preview_url != '' THEN EXCLUDED.preview_url ELSE tracks.preview_url END,
+                    album_name  = EXCLUDED.album_name,
+                    album_image = CASE WHEN EXCLUDED.album_image != '' THEN EXCLUDED.album_image ELSE tracks.album_image END,
+                    duration_ms = EXCLUDED.duration_ms,
+                    explicit    = EXCLUDED.explicit,
+                    popularity  = EXCLUDED.popularity,
+                    updated_at  = NOW()
+            """, ids, names, artists, previews, album_names, album_imgs,
+                 durations, explicits, populars)
 
+            existing_links = await conn.fetchval(
+                "SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = $1",
+                playlist_id,
+            ) or 0
+
+            if fetch_complete or len(tracks) >= existing_links:
+                await conn.execute(
+                    "DELETE FROM playlist_tracks WHERE playlist_id = $1", playlist_id
+                )
                 await conn.execute("""
                     INSERT INTO playlist_tracks (playlist_id, track_id, position)
-                    VALUES ($1, $2, $3)
+                    SELECT $1, t.track_id, t.position
+                    FROM unnest($2::text[], $3::int[]) AS t(track_id, position)
                     ON CONFLICT DO NOTHING
-                """, playlist_id, track_id, i)
+                """, playlist_id, ids, list(range(len(ids))))
+                links_action = f"links rebuilt ({len(tracks)})"
+            else:
+                # Degraded fetch: refresh metadata/previews only, keep the
+                # larger set of existing links intact.
+                await conn.execute("""
+                    INSERT INTO playlist_tracks (playlist_id, track_id, position)
+                    SELECT $1, t.track_id, t.position
+                    FROM unnest($2::text[], $3::int[]) AS t(track_id, position)
+                    ON CONFLICT DO NOTHING
+                """, playlist_id, ids, list(range(len(ids))))
+                links_action = (
+                    f"links preserved (fetch returned {len(tracks)}, "
+                    f"DB has {existing_links})"
+                )
 
-    logger.info(f"Saved playlist '{result.get('name')}' to DB: {len(tracks)} tracks")
+    logger.info(
+        f"Saved playlist '{result.get('name')}' to DB: {len(tracks)} tracks, {links_action}"
+    )
 
 async def get_album_art_from_db(track_ids: list[str]) -> dict[str, str]:
     """

@@ -65,6 +65,11 @@ CREATE TABLE IF NOT EXISTS playlist_tracks (
     PRIMARY KEY (playlist_id, track_id)
 );
 
+-- Reverse lookup (track → playlists): used by the preview worker's retry
+-- query and the "which playlists were affected" lookup after recovery.
+CREATE INDEX IF NOT EXISTS idx_playlist_tracks_track_id
+    ON playlist_tracks(track_id);
+
 -- ─── Daily Challenges ───────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS daily_challenges (
     challenge_date  DATE PRIMARY KEY,
