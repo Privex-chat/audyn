@@ -11,6 +11,12 @@ import re
 import httpx
 
 from database import init_db, get_conn
+from preview_store import (
+    MAX_PREVIEW_RETRIES,
+    mark_recovered,
+    mark_failed,
+    mark_unavailable,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,8 +28,9 @@ PREVIEW_RETRY_BATCH = 5
 PREVIEW_RETRY_DELAY = 4.0
 PREVIEW_RETRY_BATCH_PAUSE = 60.0
 PREVIEW_RETRY_CYCLE_PAUSE = 1800
-
-MAX_PREVIEW_RETRIES = 5
+# Bound a single cycle: least-retried tracks first, the rest wait for the
+# next cycle instead of one cycle running for hours.
+PREVIEW_RETRY_CYCLE_LIMIT = 500
 
 BROWSER_HEADERS = {
     "User-Agent": (
@@ -46,60 +53,6 @@ def parse_embed_next_data(html: str) -> dict:
     except json.JSONDecodeError:
         return {}
 
-async def _mark_unavailable(conn, track_id: str, reason: str):
-    """Immediately mark a track as permanently unavailable (e.g. HTTP 404)."""
-    await conn.execute(
-        """
-        UPDATE tracks
-        SET preview_unavailable = TRUE,
-            preview_retry_count = preview_retry_count + 1,
-            updated_at          = NOW()
-        WHERE track_id = $1
-        """,
-        track_id,
-    )
-    logger.info(f"Preview retry: track {track_id} marked unavailable — {reason}")
-
-async def _increment_retry(conn, track_id: str):
-    """
-    Increment the retry counter.  If it has now reached MAX_PREVIEW_RETRIES,
-    also flip preview_unavailable so the worker stops queuing this track.
-    """
-    new_count = await conn.fetchval(
-        """
-        UPDATE tracks
-        SET preview_retry_count = preview_retry_count + 1,
-            updated_at          = NOW()
-        WHERE track_id = $1
-        RETURNING preview_retry_count
-        """,
-        track_id,
-    )
-    if new_count is not None and new_count >= MAX_PREVIEW_RETRIES:
-        await conn.execute(
-            "UPDATE tracks SET preview_unavailable = TRUE WHERE track_id = $1",
-            track_id,
-        )
-        logger.info(
-            f"Preview retry: track {track_id} exhausted {MAX_PREVIEW_RETRIES} "
-            f"attempts — marked unavailable"
-        )
-
-async def _mark_success(conn, track_id: str, url: str):
-    """Persist the recovered preview URL and reset the retry counters."""
-    await conn.execute(
-        """
-        UPDATE tracks
-        SET preview_url         = $1,
-            preview_retry_count = 0,
-            preview_unavailable = FALSE,
-            updated_at          = NOW()
-        WHERE track_id = $2
-        """,
-        url,
-        track_id,
-    )
-
 async def run_retry_cycle():
     async with get_conn() as conn:
         rows = await conn.fetch("""
@@ -108,8 +61,10 @@ async def run_retry_cycle():
             JOIN playlist_tracks pt ON pt.track_id = t.track_id
             WHERE (t.preview_url IS NULL OR t.preview_url = '')
               AND t.preview_unavailable = FALSE
-            ORDER BY t.track_id
-        """)
+              AND t.preview_retry_count < $1
+            ORDER BY t.preview_retry_count, t.track_id
+            LIMIT $2
+        """, MAX_PREVIEW_RETRIES, PREVIEW_RETRY_CYCLE_LIMIT)
 
     track_ids = [r["track_id"] for r in rows]
     if not track_ids:
@@ -201,16 +156,11 @@ async def run_retry_cycle():
 
                 await asyncio.sleep(PREVIEW_RETRY_DELAY)
 
-            if recovered_in_batch or failed_in_batch or unavailable_in_batch:
-                async with get_conn() as conn:
-                    for tid, url in recovered_in_batch.items():
-                        await _mark_success(conn, tid, url)
-
-                    for tid in unavailable_in_batch:
-                        await _mark_unavailable(conn, tid, "HTTP 404 — track removed or invalid")
-
-                    for tid in failed_in_batch:
-                        await _increment_retry(conn, tid)
+            # Batched persistence via the shared store (same code path the
+            # API's on-demand fill uses).
+            await mark_recovered(recovered_in_batch)
+            await mark_unavailable(unavailable_in_batch)
+            await mark_failed(failed_in_batch)
 
             if recovered_in_batch:
                 async with get_conn() as conn:
