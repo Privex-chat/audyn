@@ -8,7 +8,6 @@ from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Query
 from fastapi.responses import StreamingResponse, Response
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
-from fastapi.middleware.gzip import GZipMiddleware
 from contextlib import asynccontextmanager
 
 import os
@@ -115,9 +114,18 @@ class RateLimiter:
         self._requests: dict[str, list[float]] = {}
         self.max_requests = max_requests
         self.window = window_seconds
+        self._last_cleanup = time.time()
 
     def is_allowed(self, ip: str) -> bool:
         now = time.time()
+        # Evict idle IPs periodically — otherwise the dict grows one entry per
+        # IP ever seen and never shrinks.
+        if now - self._last_cleanup > 300:
+            self._last_cleanup = now
+            cutoff = now - self.window
+            self._requests = {
+                k: v for k, v in self._requests.items() if v and v[-1] >= cutoff
+            }
         if ip not in self._requests:
             self._requests[ip] = []
         self._requests[ip] = [t for t in self._requests[ip] if now - t < self.window]
@@ -304,14 +312,33 @@ async def get_api_token(http):
         logger.warning(f"Token error: {e}")
     return ""
 
+async def _spotify_get_with_retry(http, url, *, params=None, headers=None, attempts=3):
+    """GET that honours Spotify's Retry-After on 429. Returns response or None."""
+    for _ in range(attempts):
+        try:
+            resp = await http.get(url, params=params, headers=headers)
+        except Exception as e:
+            logger.warning(f"Spotify request failed: {e}")
+            return None
+        if resp.status_code == 429:
+            try:
+                wait = float(resp.headers.get("Retry-After", "2"))
+            except ValueError:
+                wait = 2.0
+            await asyncio.sleep(min(wait + 0.5, 30))
+            continue
+        return resp
+    return None
+
 async def fetch_all_track_metadata(http, token, playlist_id):
     api_headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-    meta_resp = await http.get(
+    meta_resp = await _spotify_get_with_retry(
+        http,
         f"https://api.spotify.com/v1/playlists/{playlist_id}",
         params={"fields": "name,images,tracks.total"},
         headers=api_headers,
     )
-    if meta_resp.status_code != 200:
+    if meta_resp is None or meta_resp.status_code != 200:
         return "", "", [], 0
 
     meta = meta_resp.json()
@@ -321,23 +348,37 @@ async def fetch_all_track_metadata(http, token, playlist_id):
     total_tracks = meta.get("tracks", {}).get("total", 0)
     logger.info(f"Spotify API: '{playlist_name}' — {total_tracks} tracks")
 
+    # All page offsets are known upfront, so fetch them concurrently (bounded)
+    # instead of one-by-one with sleeps. A failed page yields a partial fetch;
+    # save_playlist's link guard keeps a partial fetch from shrinking the
+    # stored playlist.
+    offsets = list(range(0, min(total_tracks, 1500), 100))
+    semaphore = asyncio.Semaphore(4)
+
+    async def fetch_page(offset):
+        async with semaphore:
+            resp = await _spotify_get_with_retry(
+                http,
+                f"https://api.spotify.com/v1/playlists/{playlist_id}/tracks",
+                params={
+                    "offset": offset,
+                    "limit": 100,
+                    "fields": "items(track(id,name,duration_ms,artists,album(name,images),explicit,popularity)),next",
+                },
+                headers=api_headers,
+            )
+            if resp is None or resp.status_code != 200:
+                return offset, None
+            return offset, resp.json().get("items", [])
+
+    pages = await asyncio.gather(*(fetch_page(o) for o in offsets))
+
     all_meta = []
-    offset = 0
-    while offset < total_tracks and offset < 1500:
-        resp = await http.get(
-            f"https://api.spotify.com/v1/playlists/{playlist_id}/tracks",
-            params={
-                "offset": offset,
-                "limit": 100,
-                "fields": "items(track(id,name,duration_ms,artists,album(name,images),explicit,popularity)),next",
-            },
-            headers=api_headers,
-        )
-        if resp.status_code != 200:
-            break
-        items = resp.json().get("items", [])
-        if not items:
-            break
+    failed_pages = 0
+    for _offset, items in sorted(pages, key=lambda p: p[0]):
+        if items is None:
+            failed_pages += 1
+            continue
         for item in items:
             t = item.get("track")
             if not t or not t.get("id"):
@@ -366,10 +407,12 @@ async def fetch_all_track_metadata(http, token, playlist_id):
                     "popularity": t.get("popularity", 0),
                 }
             )
-        offset += 100
-        logger.info(f"  metadata: {min(offset, total_tracks)}/{total_tracks}")
-        if offset < total_tracks:
-            await asyncio.sleep(0.1)
+
+    if failed_pages:
+        logger.warning(
+            f"Metadata fetch partial for {playlist_id}: {failed_pages}/{len(offsets)} pages failed"
+        )
+    logger.info(f"  metadata: {len(all_meta)}/{total_tracks} tracks fetched")
 
     return playlist_name, playlist_image, all_meta, total_tracks
 
@@ -533,13 +576,49 @@ async def fetch_playlist_embed_only(http, playlist_id):
         "pending_preview_retry": pending_retry,
     }
 
+# Single-flight guard: concurrent requests for the same uncached playlist
+# share one Spotify fetch instead of each launching their own (cache stampede).
+_playlist_fetches: dict[str, asyncio.Task] = {}
+
+async def _finalize_and_save(playlist_id: str, result: dict, tracks_for_db: list) -> dict:
+    """Persist a fetch result, then serve whichever view is larger: this fetch
+    or the DB (which may hold worker-recovered previews and links preserved
+    across a degraded fetch)."""
+    save_result = dict(result)
+    save_result["tracks"] = tracks_for_db
+    try:
+        await save_playlist_to_db(playlist_id, save_result)
+    except Exception as e:
+        logger.warning(f"DB save failed: {e}")
+
+    try:
+        db_result = await load_playlist_from_db(playlist_id)
+        if db_result and db_result["total_tracks"] > result["total_tracks"]:
+            total = result.get("total_in_playlist") or db_result.get("total_in_playlist") or 0
+            skipped = db_result.get("skipped_no_preview") or 0
+            db_result["pending_preview_retry"] = max(
+                0, total - db_result["total_tracks"] - skipped
+            )
+            logger.info(
+                f"Serving merged DB view for {playlist_id}: "
+                f"{db_result['total_tracks']} tracks (fetch returned {result['total_tracks']})"
+            )
+            memory_cache.set(playlist_id, db_result)
+            return db_result
+    except Exception as e:
+        logger.warning(f"DB merge after save failed: {e}")
+
+    memory_cache.set(playlist_id, result)
+    return result
+
 async def fetch_playlist(playlist_id: str, force_refresh: bool = False) -> dict:
     """
     Fetch pipeline:
     1. In-memory hot cache (10 min)         — skipped when force_refresh=True
     2. PostgreSQL persistent cache (7 days) — skipped when force_refresh=True;
                                               stale record is deleted first
-    3. Full Spotify fetch (API + embed)     — always runs when force_refresh=True
+    3. Full Spotify fetch (API + embed)     — always runs when force_refresh=True;
+                                              concurrent callers share one fetch
     """
     if not force_refresh:
         cached = memory_cache.get(playlist_id)
@@ -567,25 +646,27 @@ async def fetch_playlist(playlist_id: str, force_refresh: bool = False) -> dict:
         except Exception as e:
             logger.warning(f"DB evict failed (non-fatal): {e}")
 
+    task = _playlist_fetches.get(playlist_id)
+    if task is None:
+        task = asyncio.create_task(_fetch_playlist_from_spotify(playlist_id))
+        _playlist_fetches[playlist_id] = task
+        task.add_done_callback(lambda _t: _playlist_fetches.pop(playlist_id, None))
+    else:
+        logger.info(f"Joining in-flight fetch for {playlist_id}")
+    return await task
+
+async def _fetch_playlist_from_spotify(playlist_id: str) -> dict:
     logger.info(f"Fetching from Spotify: {playlist_id}")
     async with httpx.AsyncClient(follow_redirects=True, timeout=25.0) as http:
         token = await get_api_token(http)
 
         if not token:
-            # No-credentials path: use embed only.
-            # FIX: use tracks_for_db (all playable tracks, even those without a
-            # preview URL) when saving to the DB so the worker can find them.
-            # The user-facing result still only contains tracks with preview URLs.
+            # No-credentials path: use embed only. tracks_for_db carries all
+            # playable tracks (even without a preview URL) so the worker can
+            # find them; the user-facing result only has playable previews.
             result = await fetch_playlist_embed_only(http, playlist_id)
-            save_result = dict(result)
-            save_result["tracks"] = save_result.pop("tracks_for_db", save_result["tracks"])
-            try:
-                await save_playlist_to_db(playlist_id, save_result)
-            except Exception as e:
-                logger.warning(f"DB save failed: {e}")
-            result.pop("tracks_for_db", None)
-            memory_cache.set(playlist_id, result)
-            return result
+            tracks_for_db = result.pop("tracks_for_db", result["tracks"])
+            return await _finalize_and_save(playlist_id, result, tracks_for_db)
 
         playlist_name, playlist_image, all_meta, total_in_playlist = (
             await fetch_all_track_metadata(http, token, playlist_id)
@@ -593,17 +674,9 @@ async def fetch_playlist(playlist_id: str, force_refresh: bool = False) -> dict:
 
         if not all_meta:
             # API metadata fetch failed; fall back to embed.
-            # Same FIX as above: save tracks_for_db so the worker can retry.
             result = await fetch_playlist_embed_only(http, playlist_id)
-            save_result = dict(result)
-            save_result["tracks"] = save_result.pop("tracks_for_db", save_result["tracks"])
-            try:
-                await save_playlist_to_db(playlist_id, save_result)
-            except Exception as e:
-                logger.warning(f"DB save failed: {e}")
-            result.pop("tracks_for_db", None)
-            memory_cache.set(playlist_id, result)
-            return result
+            tracks_for_db = result.pop("tracks_for_db", result["tracks"])
+            return await _finalize_and_save(playlist_id, result, tracks_for_db)
 
         track_ids = [t["id"] for t in all_meta]
         meta_by_id = {t["id"]: t for t in all_meta}
@@ -703,15 +776,7 @@ async def fetch_playlist(playlist_id: str, force_refresh: bool = False) -> dict:
             "source": "spotify",
         }
 
-        save_result = dict(result)
-        save_result["tracks"] = tracks_for_db
-        try:
-            await save_playlist_to_db(playlist_id, save_result)
-        except Exception as e:
-            logger.warning(f"DB save failed: {e}")
-
-        memory_cache.set(playlist_id, result)
-        return result
+        return await _finalize_and_save(playlist_id, result, tracks_for_db)
 
 ALLOWED_AUDIO_DOMAINS = {
     "p.scdn.co",
@@ -898,7 +963,8 @@ app.include_router(rooms_router)
 app.include_router(sessions_router)
 
 app.add_middleware(SecurityHeadersMiddleware)
-app.add_middleware(GZipMiddleware, minimum_size=1000)
+# gzip is handled by nginx (gzip_types includes application/json); doing it
+# here too just burns Python CPU and pointlessly compresses MP3 streams.
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,

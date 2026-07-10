@@ -61,7 +61,8 @@ module.exports = {
       cwd: '/opt/audyn/backend',
       interpreter: '/opt/audyn/backend/venv/bin/python',
       script: '/opt/audyn/backend/venv/bin/uvicorn',
-      args: 'server:app --host 127.0.0.1 --port 8000 --workers 2',
+      // --proxy-headers so rate limiters see the real client IP behind nginx
+      args: 'server:app --host 127.0.0.1 --port 8000 --workers 2 --proxy-headers --forwarded-allow-ips 127.0.0.1',
       env: { ENV_FILE: '/opt/audyn/backend/.env' },
     },
     {
