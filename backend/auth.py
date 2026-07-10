@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import bcrypt
@@ -83,10 +84,15 @@ class AuthRateLimiter:
         self._hits: dict[str, list[float]] = {}
         self.max_requests = max_requests
         self.window = window_seconds
+        self._last_cleanup = time.time()
 
     def is_allowed(self, key: str) -> bool:
-        import time as _time
-        now = _time.time()
+        now = time.time()
+        # Evict idle IPs periodically so the dict doesn't grow forever.
+        if now - self._last_cleanup > 300:
+            self._last_cleanup = now
+            cutoff = now - self.window
+            self._hits = {k: v for k, v in self._hits.items() if v and v[-1] >= cutoff}
         hits = self._hits.get(key, [])
         hits = [t for t in hits if now - t < self.window]
         if len(hits) >= self.max_requests:
@@ -208,6 +214,18 @@ class GuestConvertRequest(BaseModel):
     password: str
     bio: str = ""
 
+async def hash_password(password: str) -> str:
+    # bcrypt takes ~100-300ms of pure CPU; run it off the event loop so it
+    # doesn't stall every other in-flight request.
+    return (
+        await asyncio.to_thread(bcrypt.hashpw, password.encode(), bcrypt.gensalt())
+    ).decode()
+
+async def check_password(password: str, password_hash: str) -> bool:
+    return await asyncio.to_thread(
+        bcrypt.checkpw, password.encode(), password_hash.encode()
+    )
+
 def create_token(user_id: str) -> str:
     payload = {
         "sub": user_id,
@@ -255,7 +273,7 @@ async def register(req: RegisterRequest, request: Request):
     client_ip = request.client.host if request.client else "unknown"
     if not auth_strict_limiter.is_allowed(client_ip):
         raise HTTPException(status_code=429, detail="Too many registration attempts. Please wait.")
-    hashed = bcrypt.hashpw(req.password.encode(), bcrypt.gensalt()).decode()
+    hashed = await hash_password(req.password)
     async with get_conn() as conn:
         existing = await conn.fetchrow(
             "SELECT id FROM users WHERE email = $1 OR username = $2",
@@ -293,7 +311,7 @@ async def login(req: LoginRequest, request: Request):
         )
     if not row:
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    if not bcrypt.checkpw(req.password.encode(), row["password_hash"].encode()):
+    if not await check_password(req.password, row["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     token = create_token(str(row["id"]))
     return {
@@ -368,9 +386,15 @@ async def upload_avatar(file: UploadFile = File(...), user=Depends(require_user)
     allowed_types = ("image/jpeg", "image/png", "image/webp")
     if file.content_type not in allowed_types:
         raise HTTPException(status_code=400, detail="Only JPEG, PNG, or WebP images allowed")
-    contents = await file.read()
-    if len(contents) > 5 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="Image must be under 5 MB")
+    # Read with a hard cap — reading the whole body before checking the size
+    # lets a client exhaust memory with one oversized upload.
+    max_bytes = 5 * 1024 * 1024
+    buf = bytearray()
+    while chunk := await file.read(64 * 1024):
+        buf.extend(chunk)
+        if len(buf) > max_bytes:
+            raise HTTPException(status_code=400, detail="Image must be under 5 MB")
+    contents = bytes(buf)
     def _detect_image_type(data: bytes) -> str | None:
         if data[:3] == b'\xff\xd8\xff':
             return 'jpeg'
@@ -386,7 +410,10 @@ async def upload_avatar(file: UploadFile = File(...), user=Depends(require_user)
             detail="Invalid image file. Only JPEG, PNG, or WebP are accepted.",
         )
     try:
-        result = cloudinary.uploader.upload(
+        # cloudinary's SDK is synchronous — run the upload in a thread so a
+        # slow upload doesn't block the event loop for its full duration.
+        result = await asyncio.to_thread(
+            cloudinary.uploader.upload,
             contents,
             folder="audyn/avatars",
             public_id=str(user["id"]),
@@ -443,7 +470,7 @@ async def convert_guest(req: GuestConvertRequest, request: Request):
         password=req.password,
         bio=req.bio,
     )
-    hashed = bcrypt.hashpw(req.password.encode(), bcrypt.gensalt()).decode()
+    hashed = await hash_password(req.password)
 
     async with get_conn() as conn:
         async with conn.transaction():
