@@ -44,6 +44,13 @@ def _validate_pinterest_link(v: str) -> str:
         raise ValueError("Invalid Pinterest URL")
     return v
 
+def _validate_password_bytes(v: str) -> str:
+    # bcrypt silently ignores/rejects bytes past 72; reject upfront so
+    # truncation never masks part of the password.
+    if len(v.encode("utf-8")) > 72:
+        raise ValueError("Password must be 72 bytes or fewer")
+    return v
+
 class TTLCache:
     def __init__(self, max_size=100, ttl_seconds=600):
         self._store: OrderedDict = OrderedDict()
@@ -173,11 +180,16 @@ class RegisterRequest(BaseModel):
     def validate_password(cls, v):
         if len(v) < 8:
             raise ValueError("Password must be at least 8 characters")
-        return v
+        return _validate_password_bytes(v)
 
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v):
+        return _validate_password_bytes(v)
 
 class ProfileUpdate(BaseModel):
     bio: str | None = None
@@ -213,6 +225,13 @@ class GuestConvertRequest(BaseModel):
     email: EmailStr
     password: str
     bio: str = ""
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v):
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        return _validate_password_bytes(v)
 
 async def hash_password(password: str) -> str:
     # bcrypt takes ~100-300ms of pure CPU; run it off the event loop so it

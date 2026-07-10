@@ -152,10 +152,13 @@ async def save_playlist(playlist_id: str, result: dict):
             """, ids, names, artists, previews, album_names, album_imgs,
                  durations, explicits, populars)
 
-            existing_links = await conn.fetchval(
-                "SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = $1",
+            existing_row = await conn.fetchrow(
+                "SELECT COUNT(*) AS cnt, COALESCE(MAX(position), -1) AS max_pos "
+                "FROM playlist_tracks WHERE playlist_id = $1",
                 playlist_id,
-            ) or 0
+            )
+            existing_links = existing_row["cnt"] or 0
+            existing_max_pos = existing_row["max_pos"]
 
             if fetch_complete or len(tracks) >= existing_links:
                 await conn.execute(
@@ -170,13 +173,15 @@ async def save_playlist(playlist_id: str, result: dict):
                 links_action = f"links rebuilt ({len(tracks)})"
             else:
                 # Degraded fetch: refresh metadata/previews only, keep the
-                # larger set of existing links intact.
+                # larger set of existing links intact. New positions start
+                # after the existing max so they don't overlap preserved links.
+                new_positions = list(range(existing_max_pos + 1, existing_max_pos + 1 + len(ids)))
                 await conn.execute("""
                     INSERT INTO playlist_tracks (playlist_id, track_id, position)
                     SELECT $1, t.track_id, t.position
                     FROM unnest($2::text[], $3::int[]) AS t(track_id, position)
                     ON CONFLICT DO NOTHING
-                """, playlist_id, ids, list(range(len(ids))))
+                """, playlist_id, ids, new_positions)
                 links_action = (
                     f"links preserved (fetch returned {len(tracks)}, "
                     f"DB has {existing_links})"
