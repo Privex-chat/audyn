@@ -7,6 +7,7 @@ import { DIFFICULTY_MODES, DEFAULT_DIFFICULTY, calculateTimePressureScore } from
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useAuth } from '@/context/AuthContext';
 import { useLanguage } from '@/context/LanguageContext';
+import { normalizeText, matchesQuery } from '@/lib/search';
 
 function getStreakMultiplier(count) {
   if (count >= 7) return 2.0;
@@ -132,8 +133,8 @@ export default function GamePage({
     if (!shuffledAllTracksRef.current) {
       shuffledAllTracksRef.current = [...tracks].sort(() => Math.random() - 0.5);
       searchIndexRef.current = shuffledAllTracksRef.current.map(t => ({
-        nameLower: t.name.toLowerCase(),
-        artistLower: t.artist.toLowerCase(),
+        name: normalizeText(t.name),
+        artist: normalizeText(t.artist),
       }));
     }
 
@@ -525,7 +526,7 @@ export default function GamePage({
   const searchPool = shuffledAllTracksRef.current || tracks;
 
   const filteredItems = useMemo(() => {
-    const q = guessQuery.trim().toLowerCase();
+    const q = normalizeText(guessQuery);
     if (q.length === 0) return [];
 
     if (guessMode === 'artist') {
@@ -535,8 +536,8 @@ export default function GamePage({
       for (let i = 0; i < searchPool.length; i++) {
         const t = searchPool[i];
         const idx = searchIndexRef.current?.[i];
-        const key = idx ? idx.artistLower.trim() : t.artist.toLowerCase().trim();
-        if (!seen.has(key) && key.includes(q)) {
+        const key = idx ? idx.artist : normalizeText(t.artist);
+        if (!seen.has(key) && matchesQuery(key, q)) {
           seen.add(key);
           items.push({ artistName: t.artist, artist: t.artist, id: `artist:${key}` });
           if (items.length >= 7) break;
@@ -549,7 +550,7 @@ export default function GamePage({
       .filter((t, i) => {
         const idx = searchIndexRef.current?.[i];
         if (!idx) return false;
-        return idx.nameLower.includes(q) || idx.artistLower.includes(q);
+        return matchesQuery(idx.name, q) || matchesQuery(idx.artist, q);
       })
       .slice(0, 7);
   }, [guessQuery, guessMode, searchPool]);
