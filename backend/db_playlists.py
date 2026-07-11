@@ -127,8 +127,10 @@ async def save_playlist(playlist_id: str, result: dict):
     async with get_conn() as conn:
         async with conn.transaction():
             # A degraded fetch must not shrink a previously known bigger total
-            # (GREATEST), and a record that was complete stays complete when a
-            # degraded fetch merely refreshes it (links are preserved below).
+            # (GREATEST). Preserve an existing complete flag only when the DB
+            # already has a strictly larger linked track set than this degraded
+            # response; otherwise old near-cap embed caches can stay falsely
+            # "complete" forever.
             await conn.execute("""
                 INSERT INTO playlists (playlist_id, name, image_url, total_in_playlist,
                                        skipped_no_preview, fetch_complete, fetched_at)
@@ -139,8 +141,15 @@ async def save_playlist(playlist_id: str, result: dict):
                     total_in_playlist  = CASE WHEN $6 THEN $4
                                               ELSE GREATEST(playlists.total_in_playlist, $4) END,
                     skipped_no_preview = $5,
-                    fetch_complete     = (COALESCE(playlists.fetch_complete, TRUE)
-                                          AND playlists.total_in_playlist >= $4) OR $6,
+                    fetch_complete     = $6 OR (
+                        COALESCE(playlists.fetch_complete, FALSE)
+                        AND playlists.total_in_playlist >= $4
+                        AND (
+                            SELECT COUNT(*)
+                            FROM playlist_tracks
+                            WHERE playlist_id = $1
+                        ) > $7
+                    ),
                     fetched_at         = NOW()
             """,
                 playlist_id,
@@ -149,6 +158,7 @@ async def save_playlist(playlist_id: str, result: dict):
                 total_stated,
                 skipped,
                 fetch_complete,
+                len(tracks),
             )
 
             # Single batched upsert for all tracks. The CASE guards keep

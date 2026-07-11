@@ -46,6 +46,8 @@ export default function NavBar({ onNavigate, currentPhase, dailyUnplayed = false
                 key={t2}
                 onClick={() => setTheme(t2)}
                 className="relative p-1.5 rounded-full transition-all duration-200 btn-tactile"
+                aria-label={`Switch to ${themeLabels[t2]} theme`}
+                aria-pressed={theme === t2}
                 style={{
                   backgroundColor: theme === t2 ? 'var(--color-neon-subtle)' : 'transparent',
                   color: theme === t2 ? 'var(--color-neon)' : 'var(--color-text-muted)',
@@ -62,6 +64,8 @@ export default function NavBar({ onNavigate, currentPhase, dailyUnplayed = false
             onClick={() => onNavigate('daily')}
             className="relative p-2 transition-colors btn-tactile"
             style={{ color: currentPhase === 'daily' ? 'var(--color-neon)' : 'var(--color-text-muted)' }}
+            aria-label={t('nav.dailyChallenge')}
+            aria-current={currentPhase === 'daily' ? 'page' : undefined}
             title={t('nav.dailyChallenge')}
           >
             <Calendar className="h-4 w-4" />
@@ -78,6 +82,8 @@ export default function NavBar({ onNavigate, currentPhase, dailyUnplayed = false
             onClick={() => onNavigate('leaderboard')}
             className="p-2 transition-colors btn-tactile"
             style={{ color: currentPhase === 'leaderboard' ? 'var(--color-neon)' : 'var(--color-text-muted)' }}
+            aria-label={t('nav.leaderboard')}
+            aria-current={currentPhase === 'leaderboard' ? 'page' : undefined}
             title={t('nav.leaderboard')}
           >
             <Trophy className="h-4 w-4" />
@@ -88,6 +94,8 @@ export default function NavBar({ onNavigate, currentPhase, dailyUnplayed = false
             <button
               onClick={() => onNavigate('profile')}
               className="p-1.5 transition-colors btn-tactile"
+              aria-label={t('nav.profile')}
+              aria-current={currentPhase === 'profile' ? 'page' : undefined}
               title={t('nav.profile')}
             >
               {user?.avatar_url ? (

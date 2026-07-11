@@ -50,6 +50,8 @@ export default function LanguageSwitcher() {
       {open && (
         <div
           className="absolute bottom-full right-0 mb-2 rounded-sm overflow-hidden animate-slide-in-up"
+          role="menu"
+          aria-label="Language options"
           style={{
             backgroundColor: 'var(--color-surface)',
             border: '1px solid var(--color-border)',
@@ -62,6 +64,8 @@ export default function LanguageSwitcher() {
               key={lang}
               onClick={() => handleSelect(lang)}
               className="w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors btn-tactile"
+              role="menuitemradio"
+              aria-checked={language === lang}
               style={{
                 backgroundColor: language === lang ? 'var(--color-neon-subtle)' : 'transparent',
                 borderBottom: '1px solid var(--color-border-subtle)',
@@ -94,6 +98,9 @@ export default function LanguageSwitcher() {
           color: open ? 'var(--color-neon)' : 'var(--color-text-muted)',
           boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
         }}
+        aria-label="Change language"
+        aria-haspopup="menu"
+        aria-expanded={open}
         title="Change language"
       >
         <Globe className="h-3.5 w-3.5" />
