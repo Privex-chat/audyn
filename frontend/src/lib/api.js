@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_BASE = process.env.REACT_APP_BACKEND_URL || 'https://api.audyn.com';
+export const API_BASE = process.env.REACT_APP_BACKEND_URL || 'https://api.audyn.xyz';
 
 const api = axios.create({
   baseURL: `${API_BASE}/api`,

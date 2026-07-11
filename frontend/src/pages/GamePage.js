@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Loader2, ArrowLeft } from 'lucide-react';
 import { toast } from 'sonner';
-import api from '@/lib/api';
+import api, { API_BASE } from '@/lib/api';
 import { getApiError } from '@/lib/utils';
 import { useAudio } from '@/hooks/useAudio';
 import { DIFFICULTY_MODES, DEFAULT_DIFFICULTY } from '@/lib/difficulty';
@@ -9,7 +9,7 @@ import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useAuth } from '@/context/AuthContext';
 import { useLanguage } from '@/context/LanguageContext';
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'https://api.audyn.xyz';
+const BACKEND_URL = API_BASE;
 
 function getStreakMultiplier(count) {
   if (count >= 7) return 2.0;
