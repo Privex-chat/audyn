@@ -950,7 +950,9 @@ export default function GamePage({
                   style={{
                     backgroundColor: 'var(--color-surface)',
                     border: '1px solid var(--color-border)',
-                    boxShadow: '0 -4px 16px rgba(0,0,0,0.4)',
+                    boxShadow: isTouchDevice.current
+                      ? '0 -4px 16px rgba(0,0,0,0.4)'
+                      : '0 4px 16px rgba(0,0,0,0.4)',
                   }}
                 >
                   {guessMode === 'artist' ? (
