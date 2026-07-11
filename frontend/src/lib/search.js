@@ -49,8 +49,11 @@ export function matchesQuery(normHaystack, normQuery) {
 // Word-bounded on the alphabetic tokens so they don't match mid-name, e.g.
 // "x" in "Xscape", "ft" in "Daft Punk", "with" in "Bill Withers".
 // Mirrors backend/matching.py _ARTIST_SEP exactly (dot consumed after the word
-// boundary so "feat." doesn't leak into the next name).
-const ARTIST_SEP = /\s*(?:,|&|\/|\+|×|\b(?:feat|ft|featuring|with|x)\b\.?)\s*/gi;
+// boundary so "feat." doesn't leak into the next name). Plain \b is ASCII-only
+// in JS (unlike Python's Unicode-aware \b), so e.g. "Beyoncéfeat." would see a
+// false boundary between "é" and "f" and wrongly split. \p{L}/\p{N} lookaround
+// mirrors Python's Unicode \w instead.
+const ARTIST_SEP = /\s*(?:,|&|\/|\+|×|(?<![\p{L}\p{N}_])(?:feat|ft|featuring|with|x)(?![\p{L}\p{N}_])\.?)\s*/giu;
 
 // Split a raw artist field into individual normalized artist names.
 // "Drake, 21 Savage" → ["drake", "21 savage"]; "A feat. B" → ["a", "b"].

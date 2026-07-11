@@ -73,6 +73,11 @@ describe('splitArtists', () => {
     expect(splitArtists('Bill Withers')).toEqual(['bill withers']);
     expect(splitArtists('Xscape')).toEqual(['xscape']);
   });
+  test('word boundary is Unicode-aware around non-ASCII letters (matches Python \\b)', () => {
+    // "é" is a word char in Python's Unicode \b, so no boundary before "feat" -> no split.
+    expect(splitArtists('Beyoncéfeat. Jay-Z')).toEqual(['beyoncefeat jay z']);
+    expect(splitArtists('Beyoncé feat. Jay-Z')).toEqual(['beyonce', 'jay z']);
+  });
 });
 
 describe('matchesArtist (correctness — any credited artist, accent-forgiving, not lenient)', () => {
