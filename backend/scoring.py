@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from auth import require_user
 from database import get_conn
 from achievements import check_per_track_achievements, check_achievements, BADGES
+from matching import matches_artist
 
 logger = logging.getLogger(__name__)
 
@@ -180,13 +181,10 @@ async def submit_score(
             raise HTTPException(status_code=409, detail="Already answered this track")
 
         if req.guess_mode == "artist":
-            stored_artist = track_entry.get("artist", "").lower().strip()
-            submitted = (req.guess or "").lower().strip()
-            if not submitted:
-                req.correct = False
-            else:
-                artist_parts = [p.strip() for p in stored_artist.split(",")]
-                req.correct = any(submitted == part for part in artist_parts)
+            # Authoritative artist judge (accent/separator-forgiving, any
+            # credited artist counts). Strict superset of the old comma-exact
+            # check, so the current frontend keeps working; see matching.py.
+            req.correct = matches_artist(req.guess or "", track_entry.get("artist", ""))
 
     if req.is_daily:
         try:

@@ -5,6 +5,7 @@ import api from '@/lib/api';
 import { DIFFICULTY_MODES, DEFAULT_DIFFICULTY, GAME_MODES } from '@/lib/difficulty';
 import { useAuth } from '@/context/AuthContext';
 import { useLanguage } from '@/context/LanguageContext';
+import { drawResultCard } from '@/lib/resultCard';
 
 const WEBAPP_URL = process.env.REACT_APP_WEBAPP_URL || window.location.origin;
 
@@ -142,17 +143,6 @@ function MissedTracksSection({ trackResults }) {
   );
 }
 
-async function loadHtml2Canvas() {
-  if (window.html2canvas) return window.html2canvas;
-  return new Promise((resolve, reject) => {
-    const s = document.createElement('script');
-    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
-    s.onload = () => resolve(window.html2canvas);
-    s.onerror = () => reject(new Error('html2canvas load failed'));
-    document.head.appendChild(s);
-  });
-}
-
 export default function EndPage({ results, playlistData, onReplay, onNewPlaylist, onSignup, onNavigate }) {
   const { user, isAuthenticated, isGuest } = useAuth();
   const { t } = useLanguage();
@@ -261,24 +251,25 @@ export default function EndPage({ results, playlistData, onReplay, onNewPlaylist
   };
 
   const handleSaveCard = useCallback(async () => {
-    if (!cardRef.current || savingCard) return;
+    const canvas = cardRef.current;
+    if (!canvas || savingCard) return;
     setSavingCard(true);
     try {
-      const h2c = await loadHtml2Canvas();
-      const canvas = await h2c(cardRef.current, {
-        useCORS: true,
-        allowTaint: true,
-        backgroundColor: null,
-        scale: 2,           // retina-quality
-        logging: false,
-      });
-      const link = document.createElement('a');
       const safePlaylist = (playlistName || 'audyn').replace(/[^a-z0-9]/gi, '-').toLowerCase();
-      link.download = `audyn-${safePlaylist}.png`;
-      link.href = canvas.toDataURL('image/png');
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
+      // Save the exact canvas that's on screen — preview and download are one
+      // and the same image.
+      await new Promise((resolve, reject) => {
+        canvas.toBlob((blob) => {
+          if (!blob) { reject(new Error('toBlob failed')); return; }
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `audyn-${safePlaylist}.png`;
+          a.click();
+          setTimeout(() => URL.revokeObjectURL(url), 5000);
+          resolve();
+        }, 'image/png');
+      });
       toast.success('Card saved!');
     } catch (err) {
       console.error('Save card failed:', err);
@@ -406,6 +397,9 @@ export default function EndPage({ results, playlistData, onReplay, onNewPlaylist
   );
 }
 
+// Canvas-rendered result card: the on-screen preview and the saved PNG are the
+// SAME canvas, so they can't diverge (the old DOM + html2canvas path dropped
+// text-shadows, clipped the bg image, mis-rendered emoji, and failed offline).
 export function ResultCard({
   cardRef,
   score, maxScore, correctGuesses, totalTracks, percentage,
@@ -413,228 +407,37 @@ export function ResultCard({
   gameMode = 'classic', guessMode = 'song', isDaily,
   emojiGrid, username, displayName, trackResults,
 }) {
-  const date = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  const internalRef = useRef(null);
+  const ref = cardRef || internalRef;
 
   const greenCount  = (trackResults || []).filter((r) => classifyResult(r) === 'green').length;
   const yellowCount = (trackResults || []).filter((r) => classifyResult(r) === 'yellow').length;
   const redCount    = (trackResults || []).filter((r) => classifyResult(r) === 'red').length;
+  const diffColor   = difficulty?.color || '#00ff88';
 
-  const diffColor = difficulty?.color || '#00ff88';
-
-  const cardBg = '#111118';
-
-  return (
-    <div
-      ref={cardRef}
-      style={{
-        position: 'relative',
-        overflow: 'hidden',
-        borderRadius: '16px',
-        border: '1px solid rgba(255,255,255,0.08)',
-        backgroundColor: cardBg,
-
-      }}
-    >
-      {}
-      {playlistImage && (
-        <>
-          {}
-          <div
-            aria-hidden
-            style={{
-              position: 'absolute',
-              inset: '-10%',          // overshoot so scaled img fills card
-              zIndex: 0,
-            }}
-          >
-            <img
-              src={playlistImage}
-              alt=""
-              crossOrigin="anonymous"
-              style={{
-                width: '100%',
-                height: '100%',
-                objectFit: 'cover',
-                opacity: 0.22,
-                display: 'block',
-
-                transform: 'scale(1.1)',
-              }}
-            />
-          </div>
-          {}
-          <div
-            aria-hidden
-            style={{
-              position: 'absolute',
-              inset: 0,
-              zIndex: 1,
-              background: 'linear-gradient(160deg, rgba(10,10,20,0.72) 0%, rgba(10,10,20,0.88) 100%)',
-            }}
-          />
-        </>
-      )}
-
-      {}
-      <div
-        aria-hidden
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          right: 0,
-          height: 3,
-          zIndex: 2,
-
-          background: `linear-gradient(90deg, ${diffColor}, ${diffColor}60, transparent)`,
-        }}
-      />
-
-      {}
-      <div style={{ position: 'relative', zIndex: 3, padding: '28px 24px 24px' }}>
-
-        {}
-        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8, marginBottom: 16 }}>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            <Badge color={diffColor}>{difficulty?.label || difficultyKey}</Badge>
-            <Badge color={gameMode === 'ticking_away' ? '#F59E0B' : 'rgba(255,255,255,0.45)'}>
-              {gameMode === 'ticking_away' ? '⏱ Ticking' : '🎵 Classic'}
-            </Badge>
-            {guessMode === 'artist' && <Badge color="#A855F7">🎤 Artist</Badge>}
-            {isDaily && <Badge color="#EAB308">📅 Daily</Badge>}
-          </div>
-          <span style={{ fontFamily: 'monospace', fontSize: 10, color: 'rgba(255,255,255,0.35)', flexShrink: 0, marginTop: 2 }}>
-            {date}
-          </span>
-        </div>
-
-        {}
-        <div style={{ textAlign: 'center', padding: '8px 0 12px' }}>
-          <p
-            className="font-heading neon-glow"
-            style={{
-              fontSize: 80,           // fixed px — html2canvas handles px reliably
-              fontWeight: 800,
-              lineHeight: 1,
-              letterSpacing: '-0.02em',
-              color: diffColor,
-              margin: 0,
-            }}
-          >
-            {score}
-          </p>
-          <p style={{ fontFamily: 'monospace', fontSize: 12, color: 'rgba(255,255,255,0.4)', marginTop: 6 }}>
-            out of {maxScore} points
-          </p>
-        </div>
-
-        {}
-        <div style={{ display: 'flex', justifyContent: 'center', gap: 12, padding: '10px 0' }}>
-          <StatPill label="Correct"  value={`${correctGuesses}/${totalTracks}`} highlight={false} neonColor={diffColor} />
-          <StatPill label="Accuracy" value={`${percentage}%`}                   highlight={percentage === 100} neonColor={diffColor} />
-        </div>
-
-        {}
-        {emojiGrid && (
-          <div style={{ marginTop: 8, marginBottom: 8 }}>
-            <p style={{ textAlign: 'center', fontSize: 18, lineHeight: 1.6, letterSpacing: 2, margin: 0 }}>
-              {emojiGrid}
-            </p>
-            <div style={{ display: 'flex', justifyContent: 'center', gap: 12, marginTop: 4 }}>
-              {greenCount  > 0 && <span style={{ fontFamily: 'monospace', fontSize: 9, color: 'rgba(255,255,255,0.35)' }}>🟩 1st Try</span>}
-              {yellowCount > 0 && <span style={{ fontFamily: 'monospace', fontSize: 9, color: 'rgba(255,255,255,0.35)' }}>🟨 Nice Try</span>}
-              {redCount    > 0 && <span style={{ fontFamily: 'monospace', fontSize: 9, color: 'rgba(255,255,255,0.35)' }}>🟥 Try Again</span>}
-            </div>
-          </div>
-        )}
-
-        {}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, paddingTop: 16, marginTop: 8, borderTop: '1px solid rgba(255,255,255,0.07)' }}>
-          {}
-          {playlistImage ? (
-            <img
-              src={playlistImage}
-              alt=""
-              crossOrigin="anonymous"
-              style={{ width: 40, height: 40, borderRadius: 8, objectFit: 'cover', flexShrink: 0, border: '1px solid rgba(255,255,255,0.1)' }}
-            />
-          ) : (
-            <div style={{ width: 40, height: 40, borderRadius: 8, flexShrink: 0, backgroundColor: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 }}>
-              🎵
-            </div>
-          )}
-
-          <div style={{ minWidth: 0, flex: 1 }}>
-            <p style={{ fontFamily: 'sans-serif', fontSize: 12, fontWeight: 500, color: 'rgba(255,255,255,0.75)', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {playlistName}
-            </p>
-            {username && username !== 'Guest' && (
-              
-              <span style={{ display: 'block', fontFamily: 'monospace', fontSize: 10, color: 'rgba(255,255,255,0.35)', marginTop: 2 }}>
-                {displayName || `@${username}`}
-                {displayName && <span style={{ color: 'rgba(255,255,255,0.2)' }}> · @{username}</span>}
-              </span>
-            )}
-          </div>
-
-          {}
-          <span
-            className="font-heading"
-            style={{ flexShrink: 0, fontWeight: 800, letterSpacing: '0.35em', textTransform: 'uppercase', fontSize: 10, color: diffColor, opacity: 0.6 }}
-          >
-            AUDYN
-          </span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Badge({ color, children }) {
-  return (
-    <span
-      style={{
-        fontFamily: 'monospace',
-        fontSize: 10,
-        textTransform: 'uppercase',
-        letterSpacing: '0.18em',
-        padding: '2px 8px',
-        borderRadius: 4,
-        color,
-
-        border: `1px solid ${color}55`,
-        backgroundColor: `${color}18`,
-        display: 'inline-block',
-      }}
-    >
-      {children}
-    </span>
-  );
-}
-
-function StatPill({ label, value, highlight, neonColor }) {
-
-  const bgColor     = highlight ? 'rgba(0,255,136,0.12)'  : 'rgba(255,255,255,0.05)';
-  const borderColor = highlight ? 'rgba(0,255,136,0.28)'  : 'rgba(255,255,255,0.08)';
-  const textColor   = highlight ? (neonColor || '#00ff88') : 'rgba(255,255,255,0.85)';
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas) return;
+    let cancelled = false;
+    const date = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    drawResultCard(canvas, {
+      score, maxScore, correctGuesses, totalTracks, percentage,
+      playlistName, playlistImage,
+      diffColor, difficultyLabel: difficulty?.label || difficultyKey,
+      gameMode, guessMode, isDaily,
+      emojiGrid, greenCount, yellowCount, redCount,
+      username, displayName, date,
+    }, () => cancelled).catch((err) => console.error('drawResultCard failed', err));
+    return () => { cancelled = true; };
+  }, [ref, score, maxScore, correctGuesses, totalTracks, percentage, playlistName,
+      playlistImage, diffColor, difficulty, difficultyKey, gameMode, guessMode, isDaily,
+      emojiGrid, greenCount, yellowCount, redCount, username, displayName]);
 
   return (
-    <div
-      style={{
-        textAlign: 'center',
-        padding: '8px 16px',
-        borderRadius: 10,
-        backgroundColor: bgColor,
-        border: `1px solid ${borderColor}`,
-        minWidth: 76,
-      }}
-    >
-      <p style={{ fontFamily: 'monospace', fontSize: 16, fontWeight: 700, color: textColor, lineHeight: 1.2, margin: 0 }}>
-        {value}
-      </p>
-      <p style={{ fontFamily: 'monospace', fontSize: 9, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'rgba(255,255,255,0.35)', marginTop: 3, marginBottom: 0 }}>
-        {label}
-      </p>
-    </div>
+    <canvas
+      ref={ref}
+      aria-label={`Audyn score: ${score} out of ${maxScore}`}
+      style={{ width: '100%', maxWidth: 440, height: 'auto', display: 'block', margin: '0 auto', borderRadius: 16 }}
+    />
   );
 }

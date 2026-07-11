@@ -53,6 +53,7 @@ const en = {
     challengeFriend: '⚔️ Challenge a Friend',
     changePlaylist: 'Change playlist',
     playableTracks: '{count} playable tracks',
+    loadingPreviews: 'Loading previews…',
 
     beatScore: '⚔️ Beat {username}\'s score of {score}!',
 
@@ -84,6 +85,7 @@ const en = {
     tapToUnlock: 'Tap anywhere to unlock audio',
     listening: 'LISTENING...',
     ready: 'READY',
+    tapReplay: 'Tap to replay',
     loadingAudio: 'LOADING...',
     skipped: 'SKIPPED',
     audioError: 'AUDIO ERROR',

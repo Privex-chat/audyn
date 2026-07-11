@@ -52,6 +52,7 @@ const es = {
     challengeFriend: '⚔️ Desafiar a un amigo',
     changePlaylist: 'Cambiar playlist',
     playableTracks: '{count} pistas reproducibles',
+    loadingPreviews: 'Cargando fragmentos…',
     beatScore: '⚔️ ¡Supera la puntuación de {username} de {score}!',
 
     announcement: {
@@ -80,6 +81,7 @@ const es = {
     tapToUnlock: 'Toca en cualquier lugar para desbloquear el audio',
     listening: 'ESCUCHANDO...',
     ready: 'LISTO',
+    tapReplay: 'Toca para repetir',
     loadingAudio: 'CARGANDO...',
     skipped: 'SALTADO',
     audioError: 'ERROR DE AUDIO',

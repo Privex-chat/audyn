@@ -52,6 +52,7 @@ const hi = {
     challengeFriend: '⚔️ दोस्त को चुनौती दें',
     changePlaylist: 'प्लेलिस्ट बदलें',
     playableTracks: '{count} बजाने योग्य ट्रैक',
+    loadingPreviews: 'प्रीव्यू लोड हो रहे हैं…',
     beatScore: '⚔️ {username} का स्कोर {score} को हराएं!',
 
     announcement: {
@@ -80,6 +81,7 @@ const hi = {
     tapToUnlock: 'ऑडियो अनलॉक करने के लिए कहीं भी टैप करें',
     listening: 'सुन रहे हैं...',
     ready: 'तैयार',
+    tapReplay: 'दोबारा सुनें',
     loadingAudio: 'लोड हो रहा है...',
     skipped: 'छोड़ दिया',
     audioError: 'ऑडियो त्रुटि',

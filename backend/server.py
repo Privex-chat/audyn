@@ -550,20 +550,29 @@ async def fetch_playlist_embed_only(http, playlist_id, known_total: int = 0):
     playlist_image = cover_sources[0]["url"] if cover_sources else ""
     track_list = entity.get("trackList", [])
 
-    # Spotify's embed response is capped near 100, but live responses have
-    # been observed at 98. Without an API-reported total, near-cap embed lists
-    # are a lower bound, not proof that the playlist is complete.
-    EMBED_TRACKLIST_TRUNCATION_FLOOR = 90
     authoritative_total = known_total or entity.get("trackCount", 0)
     if authoritative_total:
+        # We know the real size (from the API or the embed's own field): the
+        # fetch is truncated if the embed showed fewer than that.
         total_stated = max(authoritative_total, len(track_list))
-        embed_truncated = len(track_list) < total_stated
-    else:
-        # No authoritative total anywhere. If the list is near the embed cap,
-        # treat it as incomplete so we don't fabricate "96 of 98" totals for
-        # large playlists during Spotify API penalties.
+        embed_truncated = len(track_list) < authoritative_total
+    elif HAS_SPOTIFY_CREDS:
+        # Creds exist but we fell back to embed → the API is temporarily
+        # penalized. Spotify's embed caps its trackList (observed 98–100,
+        # variable) and no longer reports trackCount, so we CANNOT certify
+        # we've seen the whole playlist. Mark incomplete regardless of length:
+        # short cache TTL + honest warning, and it auto-heals to the full
+        # track list once API access recovers. (A genuinely small playlist
+        # just shows the notice until the next successful API fetch confirms
+        # it — harmless and self-correcting.)
         total_stated = len(track_list)
-        embed_truncated = len(track_list) >= EMBED_TRACKLIST_TRUNCATION_FLOOR
+        embed_truncated = True
+    else:
+        # No credentials at all: embed is the permanent ceiling (documented
+        # ~100-track cap for keyless self-hosting). Treat what we have as
+        # complete so it doesn't re-fetch forever.
+        total_stated = len(track_list)
+        embed_truncated = False
 
     # FIX: build two separate lists so that all playable tracks (even those
     # without a preview URL) are persisted to the DB for the worker to retry,
@@ -636,9 +645,13 @@ _preview_fill_cooldown = TTLCache(max_size=500, ttl_seconds=1800)
 # fresh playlists from hammering Spotify's embed endpoint.
 # ponytail: per-process guards; two API processes can duplicate a fill, which
 # only costs redundant scrapes (writes are idempotent).
-_preview_fill_semaphore = asyncio.Semaphore(3)
-PREVIEW_FILL_MAX_TRACKS = 400
-PREVIEW_FILL_SPACING = 0.4  # seconds a slot is held after each request
+# Balanced global cap: 8 concurrent scrapes across ALL fills. Measured safe
+# (Spotify's embed tolerated 50 req/s with zero 429s); 8 concurrent ≈ 25 req/s
+# even if several big playlists fill at once, so a burst can't trigger a
+# penalty. Bump/lower via env without a redeploy.
+_preview_fill_semaphore = asyncio.Semaphore(int(os.environ.get("PREVIEW_FILL_CONCURRENCY", "8")))
+PREVIEW_FILL_MAX_TRACKS = 1500   # cover a whole large playlist in one fill
+PREVIEW_FILL_CHUNK = 48          # persist + expose progress every chunk
 
 def _start_preview_fill(playlist_id: str):
     """Kick off a background fill for a playlist, at most once per cooldown."""
@@ -649,6 +662,31 @@ def _start_preview_fill(playlist_id: str):
     _preview_fill_tasks[playlist_id] = task
     task.add_done_callback(lambda _t: _preview_fill_tasks.pop(playlist_id, None))
 
+async def _scrape_one_preview(http, tid: str):
+    """Scrape a single track's preview from its embed page.
+    Returns (status, tid, url): status in {ok, unavail, fail, 429}."""
+    async with _preview_fill_semaphore:
+        try:
+            resp = await http.get(
+                f"https://open.spotify.com/embed/track/{tid}",
+                headers=BROWSER_HEADERS,
+            )
+        except Exception:
+            return ("fail", tid, "")
+        if resp.status_code == 429:
+            return ("429", tid, "")
+        if resp.status_code == 404:
+            return ("unavail", tid, "")
+        if resp.status_code != 200:
+            return ("fail", tid, "")
+        entity = (
+            parse_embed_next_data(resp.text)
+            .get("props", {}).get("pageProps", {})
+            .get("state", {}).get("data", {}).get("entity", {})
+        )
+        url = (entity.get("audioPreview") or {}).get("url", "")
+        return ("ok", tid, url) if url else ("fail", tid, "")
+
 async def _run_preview_fill(playlist_id: str):
     try:
         track_ids = await get_missing_preview_track_ids(
@@ -658,69 +696,39 @@ async def _run_preview_fill(playlist_id: str):
             return
         logger.info(f"Preview fill: {len(track_ids)} tracks queued for {playlist_id}")
 
-        recovered: dict[str, str] = {}
-        failed: list[str] = []
-        unavailable: list[str] = []
-        rate_limited = False
+        total_recovered = 0
+        aborted = False
 
         async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as http:
+            # Process in chunks so recovered previews land in the DB as we go —
+            # this is what lets the frontend watch the playable count climb.
+            for i in range(0, len(track_ids), PREVIEW_FILL_CHUNK):
+                chunk = track_ids[i : i + PREVIEW_FILL_CHUNK]
+                results = await asyncio.gather(*(_scrape_one_preview(http, t) for t in chunk))
 
-            async def fetch_one(tid: str):
-                nonlocal rate_limited
-                if rate_limited:
-                    return
-                async with _preview_fill_semaphore:
-                    if rate_limited:
-                        return
-                    try:
-                        resp = await http.get(
-                            f"https://open.spotify.com/embed/track/{tid}",
-                            headers=BROWSER_HEADERS,
-                        )
-                    except Exception:
-                        failed.append(tid)
-                        return
-                    if resp.status_code == 429:
-                        # Leave the rest untouched for the worker/next fill.
-                        rate_limited = True
-                        return
-                    if resp.status_code == 404:
-                        unavailable.append(tid)
-                        return
-                    if resp.status_code != 200:
-                        failed.append(tid)
-                        return
-                    entity = (
-                        parse_embed_next_data(resp.text)
-                        .get("props", {})
-                        .get("pageProps", {})
-                        .get("state", {})
-                        .get("data", {})
-                        .get("entity", {})
-                    )
-                    url = (entity.get("audioPreview") or {}).get("url", "")
-                    if url:
-                        recovered[tid] = url
-                        preview_cache.set(f"preview:{tid}", url)
-                    else:
-                        failed.append(tid)
-                    await asyncio.sleep(PREVIEW_FILL_SPACING)
+                recovered = {tid: url for (s, tid, url) in results if s == "ok"}
+                unavailable = [tid for (s, tid, _) in results if s == "unavail"]
+                failed = [tid for (s, tid, _) in results if s == "fail"]
+                aborted = any(s == "429" for (s, _, _) in results)
 
-            await asyncio.gather(*(fetch_one(tid) for tid in track_ids))
+                await mark_recovered(recovered)
+                await mark_unavailable(unavailable)
+                await mark_failed(failed)
+                for tid, url in recovered.items():
+                    preview_cache.set(f"preview:{tid}", url)
+                if recovered:
+                    total_recovered += len(recovered)
+                    memory_cache.delete(playlist_id)  # next /playlist read sees the growth
 
-        await mark_recovered(recovered)
-        await mark_unavailable(unavailable)
-        await mark_failed(failed)  # only ever contains tracks actually attempted
+                if aborted:
+                    # Back off and let the worker / next load resume; clear the
+                    # cooldown so it can retry before the usual 30 min.
+                    _preview_fill_cooldown.delete(playlist_id)
+                    break
 
-        if recovered:
-            # Serve the fuller DB view on the next request for this playlist.
-            memory_cache.delete(playlist_id)
-
-        status = "aborted on 429" if rate_limited else "complete"
         logger.info(
-            f"Preview fill {status} for {playlist_id}: "
-            f"{len(recovered)} recovered, {len(failed)} failed, "
-            f"{len(unavailable)} unavailable of {len(track_ids)} queued"
+            f"Preview fill {'aborted (429)' if aborted else 'complete'} for "
+            f"{playlist_id}: {total_recovered}/{len(track_ids)} recovered"
         )
     except Exception as e:
         logger.warning(f"Preview fill failed for {playlist_id}: {e}")
@@ -1084,6 +1092,49 @@ async def health():
         return {"status": "healthy"}
     except Exception:
         return {"status": "degraded"}
+
+@api_router.get("/playlist-status/{playlist_id}")
+async def playlist_status(playlist_id: str):
+    """Lightweight progress poll while previews fill in the background.
+    Distinct path (not /playlist/...) so it doesn't collide with the greedy
+    :path route below. Reads the DB directly — no Spotify, no cache."""
+    actual_id = extract_playlist_id(playlist_id)
+    if not re.match(r"^[a-zA-Z0-9]+$", actual_id or ""):
+        raise HTTPException(status_code=400, detail="Invalid playlist ID")
+    async with get_conn() as conn:
+        row = await conn.fetchrow(
+            "SELECT total_in_playlist, fetch_complete FROM playlists WHERE playlist_id = $1",
+            actual_id,
+        )
+        if not row:
+            return {"exists": False}
+        playable = await conn.fetchval(
+            """
+            SELECT COUNT(*) FROM playlist_tracks pt
+            JOIN tracks t ON t.track_id = pt.track_id
+            WHERE pt.playlist_id = $1
+              AND t.preview_url IS NOT NULL AND t.preview_url != ''
+            """,
+            actual_id,
+        )
+        pending = await conn.fetchval(
+            """
+            SELECT COUNT(*) FROM playlist_tracks pt
+            JOIN tracks t ON t.track_id = pt.track_id
+            WHERE pt.playlist_id = $1
+              AND (t.preview_url IS NULL OR t.preview_url = '')
+              AND t.preview_unavailable = FALSE
+              AND t.preview_retry_count < 5
+            """,
+            actual_id,
+        )
+    return {
+        "exists": True,
+        "playable": playable or 0,
+        "total": row["total_in_playlist"] or 0,
+        "pending": pending or 0,
+        "filling": (pending or 0) > 0,
+    }
 
 @api_router.get("/playlist/{playlist_id:path}")
 async def get_playlist(

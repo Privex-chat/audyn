@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Loader2, ArrowLeft } from 'lucide-react';
+import { Loader2, ArrowLeft, RotateCcw } from 'lucide-react';
 import { toast } from 'sonner';
 import api, { API_BASE } from '@/lib/api';
 import { getApiError } from '@/lib/utils';
@@ -8,6 +8,7 @@ import { DIFFICULTY_MODES, DEFAULT_DIFFICULTY } from '@/lib/difficulty';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useAuth } from '@/context/AuthContext';
 import { useLanguage } from '@/context/LanguageContext';
+import { normalizeText, normalizeLoose, matchesQuery, matchesArtist, splitArtistsRaw } from '@/lib/search';
 
 const BACKEND_URL = API_BASE;
 
@@ -90,6 +91,7 @@ export default function GamePage({
 
   const shuffledAllTracksRef = useRef(null);
   const searchIndexRef = useRef(null);
+  const artistIndexRef = useRef(null); // distinct individual artists for artist mode
   const debounceRef = useRef(null);
   const sessionIdRef = useRef(null);
   const sessionStartedRef = useRef(false); // guard: start exactly once
@@ -103,14 +105,65 @@ export default function GamePage({
     setAlbumArtMap(map);
   }, [tracks]);
 
+  // Cached playlists come back without album art (the server loads it on
+  // demand). Fetch it for the WHOLE playlist pool — not just the answer
+  // tracks — because the guess dropdown searches every song. Fetching only
+  // the answers looked inconsistent AND leaked which songs were in the game
+  // (art appeared only on answer rows). Chunked, sequential, background,
+  // best-effort; art fills in progressively and the game plays fine without it.
+  useEffect(() => {
+    const missing = tracks
+      .filter((t) => !t.album_image)
+      .map((t) => t.id || t.track_id)
+      .filter(Boolean);
+    if (missing.length === 0) return;
+
+    let cancelled = false;
+    (async () => {
+      // One 100-id request at a time keeps backend/Spotify load bounded.
+      for (let i = 0; i < missing.length && !cancelled; i += 100) {
+        const chunk = missing.slice(i, i + 100);
+        try {
+          const res = await api.get(`/tracks/art?ids=${chunk.join(',')}`);
+          const art = res.data?.art || {};
+          if (!cancelled && Object.keys(art).length > 0) {
+            setAlbumArtMap((prev) => ({ ...prev, ...art }));
+          }
+        } catch (err) {
+          // best-effort — art is decorative, gameplay is unaffected
+        }
+      }
+    })();
+
+    return () => { cancelled = true; };
+
+  }, [tracks]);
+
   useEffect(() => {
     // Autocomplete pool: shuffled once so dropdown order gives nothing away.
     if (!shuffledAllTracksRef.current) {
-      shuffledAllTracksRef.current = shuffleArray(tracks);
+      shuffledAllTracksRef.current = [...tracks].sort(() => Math.random() - 0.5);
+      // Loose-normalized index for forgiving dropdown surfacing (quotes,
+      // dashes, accents, etc.). Song correctness is still by track id.
       searchIndexRef.current = shuffledAllTracksRef.current.map(t => ({
-        nameLower: t.name.toLowerCase(),
-        artistLower: t.artist.toLowerCase(),
+        name: normalizeLoose(t.name),
+        artist: normalizeLoose(t.artist),
       }));
+      // Distinct INDIVIDUAL artists across the whole pool, so the artist
+      // dropdown lists each collaborator once ("Drake", "21 Savage", "Future")
+      // instead of confusing full collab strings.
+      const seen = new Set();
+      const artistPool = [];
+      for (const t of tracks) {
+        for (const a of splitArtistsRaw(t.artist)) {
+          const key = normalizeText(a);
+          if (key && !seen.has(key)) {
+            seen.add(key);
+            artistPool.push({ display: a, key, loose: normalizeLoose(a) });
+          }
+        }
+      }
+      artistIndexRef.current = artistPool;
     }
 
     // Start the server session exactly once. The ref guard (not effect deps)
@@ -321,9 +374,20 @@ export default function GamePage({
     }
   };
 
+  const checkGuessCorrect = (guessItem, currentTrack) => {
+    if (guessMode === 'artist') {
+      // Same judge the backend uses (matching.py) so guests and logged-in
+      // players get identical results: any credited artist, accent-forgiving.
+      return matchesArtist(guessItem.artistName || guessItem.artist || '', currentTrack.artist);
+    }
+
+    const guessId = guessItem.id || guessItem.track_id;
+    const trackId2 = currentTrack.id || currentTrack.track_id;
+    return guessId && trackId2 && guessId === trackId2;
+  };
+
   const handleGuessItem = async (item) => {
-    if (phase !== 'playing' || guessBusyRef.current) return;
-    guessBusyRef.current = true;
+    if (phase !== 'playing') return;
     stop();
 
     setHasGuessed(true);
@@ -487,20 +551,15 @@ export default function GamePage({
   const searchPool = shuffledAllTracksRef.current || tracks;
 
   const filteredItems = useMemo(() => {
-    const q = guessQuery.trim().toLowerCase();
+    const q = normalizeLoose(guessQuery);
     if (q.length === 0) return [];
 
     if (guessMode === 'artist') {
-
-      const seen = new Set();
+      const pool = artistIndexRef.current || [];
       const items = [];
-      for (let i = 0; i < searchPool.length; i++) {
-        const t = searchPool[i];
-        const idx = searchIndexRef.current?.[i];
-        const key = idx ? idx.artistLower.trim() : t.artist.toLowerCase().trim();
-        if (!seen.has(key) && key.includes(q)) {
-          seen.add(key);
-          items.push({ artistName: t.artist, artist: t.artist, id: `artist:${key}` });
+      for (const a of pool) {
+        if (matchesQuery(a.loose, q)) {
+          items.push({ artistName: a.display, artist: a.display, id: `artist:${a.key}` });
           if (items.length >= 7) break;
         }
       }
@@ -511,7 +570,7 @@ export default function GamePage({
       .filter((t, i) => {
         const idx = searchIndexRef.current?.[i];
         if (!idx) return false;
-        return idx.nameLower.includes(q) || idx.artistLower.includes(q);
+        return matchesQuery(idx.name, q) || matchesQuery(idx.artist, q);
       })
       .slice(0, 7);
   }, [guessQuery, guessMode, searchPool]);
@@ -831,6 +890,12 @@ export default function GamePage({
                   />
                 </svg>
               )}
+              {phase === 'playing' && isLoaded && !isPlaying && (
+                <span
+                  className="absolute inset-0 rounded-full animate-ping pointer-events-none"
+                  style={{ border: '2px solid var(--color-neon)', opacity: 0.35 }}
+                />
+              )}
               <button
                 onClick={handlePlayToggle}
                 className="relative w-16 h-16 rounded-full flex items-center justify-center btn-tactile transition-all"
@@ -854,6 +919,17 @@ export default function GamePage({
                 )}
               </button>
             </div>
+
+            {}
+            {phase === 'playing' && isLoaded && !isPlaying && (
+              <p
+                className="font-mono text-[10px] flex items-center gap-1.5 -mt-2"
+                style={{ color: 'var(--color-text-muted)' }}
+              >
+                <RotateCcw className="h-3 w-3" />
+                {t('game.tapReplay')}
+              </p>
+            )}
 
             {}
             <div className="w-full relative">
@@ -883,10 +959,15 @@ export default function GamePage({
               {}
               {showDropdown && filteredItems.length > 0 && (
                 <div
-                  className="absolute top-full left-0 right-0 mt-1 z-50 max-h-56 overflow-y-auto rounded-sm"
+                  className={`absolute left-0 right-0 z-50 max-h-56 overflow-y-auto rounded-sm ${
+                    isTouchDevice.current ? 'bottom-full mb-1' : 'top-full mt-1'
+                  }`}
                   style={{
                     backgroundColor: 'var(--color-surface)',
                     border: '1px solid var(--color-border)',
+                    boxShadow: isTouchDevice.current
+                      ? '0 -4px 16px rgba(0,0,0,0.4)'
+                      : '0 4px 16px rgba(0,0,0,0.4)',
                   }}
                 >
                   {guessMode === 'artist' ? (
@@ -965,8 +1046,12 @@ export default function GamePage({
             <button
               onClick={handleSkip}
               disabled={phase !== 'playing'}
-              className="font-mono text-[11px] uppercase tracking-wider px-4 py-2 btn-tactile transition-colors"
-              style={{ color: 'var(--color-text-dim)' }}
+              className="w-full flex items-center justify-center gap-2 py-2.5 rounded-sm font-mono text-xs uppercase tracking-wider btn-tactile transition-colors"
+              style={{
+                border: '1px solid var(--color-border)',
+                color: 'var(--color-text-secondary)',
+                opacity: phase !== 'playing' ? 0.4 : 1,
+              }}
             >
               {t('game.skip')} →
             </button>
