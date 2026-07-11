@@ -54,6 +54,8 @@ const en = {
     changePlaylist: 'Change playlist',
     playableTracks: '{count} playable tracks',
     loadingPreviews: 'Loading previews…',
+    back: 'Back',
+    backToPlaylist: 'Back to playlist selection',
 
     beatScore: '⚔️ Beat {username}\'s score of {score}!',
 

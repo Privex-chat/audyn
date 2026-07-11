@@ -53,6 +53,9 @@ const hi = {
     changePlaylist: 'प्लेलिस्ट बदलें',
     playableTracks: '{count} बजाने योग्य ट्रैक',
     loadingPreviews: 'प्रीव्यू लोड हो रहे हैं…',
+    back: 'वापस',
+    backToPlaylist: 'प्लेलिस्ट चयन पर वापस जाएं',
+
     beatScore: '⚔️ {username} का स्कोर {score} को हराएं!',
 
     announcement: {

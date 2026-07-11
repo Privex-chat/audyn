@@ -60,6 +60,8 @@ const ko = {
       },
 
       loadingPreviews: '미리듣기 로딩 중…',
+      back: '뒤로',
+      backToPlaylist: '플레이리스트 선택으로 돌아가기',
       easy: '쉬움',
     },
   

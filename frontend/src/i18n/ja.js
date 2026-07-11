@@ -53,6 +53,9 @@ const ja = {
     changePlaylist: 'プレイリストを変更',
     playableTracks: '再生可能: {count}トラック',
     loadingPreviews: 'プレビューを読み込み中…',
+    back: '戻る',
+    backToPlaylist: 'プレイリスト選択に戻る',
+
     beatScore: '⚔️ {username}のスコア{score}を超えよう！',
 
     announcement: {

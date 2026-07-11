@@ -30,6 +30,7 @@ function AppContent() {
   const [gameSettings, setGameSettings] = useState({ songCount: 10, difficulty: 'normal', gameMode: 'classic', guessMode: 'song' });
   const [gameResults, setGameResults] = useState(null);
   const [gameKey, setGameKey] = useState(0);
+  const [homePageKey, setHomePageKey] = useState(0);
   const [isDailyGame, setIsDailyGame] = useState(false);
   const [dailyPlaylistId, setDailyPlaylistId] = useState(null);
   const [guestConvert, setGuestConvert] = useState(false);
@@ -138,13 +139,14 @@ function AppContent() {
     navigateTo('game');
   };
 
-  const handleNewPlaylist = () => {
+  const handleNewPlaylist = useCallback(() => {
     setPlaylistData(null);
     setGameResults(null);
     setIsDailyGame(false);
     setDailyPlaylistId(null);
+    setHomePageKey((prev) => prev + 1);
     navigateTo('home');
-  };
+  }, [navigateTo]);
 
   const goHome = () => {
     window.history.pushState({}, '', '/');
@@ -177,6 +179,7 @@ function AppContent() {
   }, [navigateTo]);
 
   const showNav = !['game', 'room'].includes(phase);
+  const isPreGame = phase === 'home' && playlistData;
 
   if (authLoading) {
     return (
@@ -196,6 +199,7 @@ function AppContent() {
           onNavigate={handleNavigate}
           currentPhase={phase}
           dailyUnplayed={dailyUnplayed}
+          onHomeClick={isPreGame ? handleNewPlaylist : undefined}
         />
       )}
 
@@ -206,8 +210,10 @@ function AppContent() {
         {phase === 'home' && (
           <div className="phase-enter">
             <HomePage
+              key={homePageKey}
               onStart={handleStart}
               onNavigate={handleNavigate}
+              onBack={handleNewPlaylist}
               challengeData={challengeData}
               onClearChallenge={() => setChallengeData(null)}
               pendingPlaylistId={pendingPlaylistId}

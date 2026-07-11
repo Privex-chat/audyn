@@ -53,6 +53,9 @@ const es = {
     changePlaylist: 'Cambiar playlist',
     playableTracks: '{count} pistas reproducibles',
     loadingPreviews: 'Cargando fragmentos…',
+    back: 'Atrás',
+    backToPlaylist: 'Volver a selección de playlist',
+
     beatScore: '⚔️ ¡Supera la puntuación de {username} de {score}!',
 
     announcement: {

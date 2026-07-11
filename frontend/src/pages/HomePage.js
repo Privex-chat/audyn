@@ -7,7 +7,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Loader2, Music, Play, Zap, Users, ChevronRight } from 'lucide-react';
+import { Loader2, Music, Play, Zap, Users, ChevronRight, ArrowLeft } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/lib/api';
 import { DIFFICULTY_MODES, DEFAULT_DIFFICULTY, GAME_MODES, DEFAULT_GAME_MODE, GUESS_MODES, DEFAULT_GUESS_MODE } from '@/lib/difficulty';
@@ -21,6 +21,7 @@ const RECENT_KEY = 'audyn_recent_playlists';
 export default function HomePage({
   onStart,
   onNavigate,
+  onBack,
   challengeData,
   onClearChallenge,
   pendingPlaylistId,
@@ -488,6 +489,22 @@ return (
         {}
         {playlistInfo && (
           <div className={`space-y-5 ${playlistLoaded ? 'animate-card-enter' : 'opacity-0'}`}>
+            {}
+            <button
+              onClick={() => {
+                setPlaylistInfo(null);
+                setPlaylistLoaded(false);
+                setUrl('');
+                setFillStatus(null);
+                onBack?.();
+              }}
+              className="flex items-center gap-1.5 px-1 py-1.5 btn-tactile transition-colors"
+              style={{ color: 'var(--color-text-muted)' }}
+              aria-label={t('home.backToPlaylist')}
+            >
+              <ArrowLeft className="h-4 w-4" />
+              <span className="font-mono text-[10px] uppercase tracking-wider">{t('home.back')}</span>
+            </button>
             {}
             <div
               className="p-4 rounded-sm transition-shadow"

@@ -11,7 +11,7 @@ const themeIcons = {
 
 const themeLabels = { noir: 'Noir', light: 'Light', crt: 'CRT' };
 
-export default function NavBar({ onNavigate, currentPhase, dailyUnplayed = false }) {
+export default function NavBar({ onNavigate, currentPhase, dailyUnplayed = false, onHomeClick }) {
   const { theme, setTheme, themes } = useThemeMode();
   const { user, isAuthenticated, isGuest } = useAuth();
   const { t } = useLanguage();
@@ -27,7 +27,7 @@ export default function NavBar({ onNavigate, currentPhase, dailyUnplayed = false
       <div className="max-w-2xl mx-auto px-4 h-12 flex items-center justify-between">
         {}
         <button
-          onClick={() => onNavigate('home')}
+          onClick={onHomeClick ? onHomeClick : () => onNavigate('home')}
           className="flex items-center gap-2 font-heading text-lg font-extrabold tracking-wider btn-tactile"
           style={{ color: 'var(--color-neon)' }}
         >
