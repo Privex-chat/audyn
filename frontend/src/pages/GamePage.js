@@ -90,12 +90,13 @@ export default function GamePage({
   }, [tracks]);
 
   // Cached playlists come back without album art (the server loads it on
-  // demand), so fetch it for the tracks actually being played and merge it
-  // into albumArtMap — which the reveal card and the guess dropdown already
-  // read. Best-effort: the game plays fine if this fails.
+  // demand). Fetch it for the WHOLE playlist pool — not just the answer
+  // tracks — because the guess dropdown searches every song. Fetching only
+  // the answers looked inconsistent AND leaked which songs were in the game
+  // (art appeared only on answer rows). Chunked, sequential, background,
+  // best-effort; art fills in progressively and the game plays fine without it.
   useEffect(() => {
-    if (gameTracks.length === 0) return;
-    const missing = gameTracks
+    const missing = tracks
       .filter((t) => !t.album_image)
       .map((t) => t.id || t.track_id)
       .filter(Boolean);
@@ -103,25 +104,24 @@ export default function GamePage({
 
     let cancelled = false;
     (async () => {
-      const merged = {};
-      // /tracks/art accepts up to 100 ids per request
-      for (let i = 0; i < missing.length; i += 100) {
+      // One 100-id request at a time keeps backend/Spotify load bounded.
+      for (let i = 0; i < missing.length && !cancelled; i += 100) {
         const chunk = missing.slice(i, i + 100);
         try {
           const res = await api.get(`/tracks/art?ids=${chunk.join(',')}`);
-          Object.assign(merged, res.data?.art || {});
+          const art = res.data?.art || {};
+          if (!cancelled && Object.keys(art).length > 0) {
+            setAlbumArtMap((prev) => ({ ...prev, ...art }));
+          }
         } catch (err) {
-          // ignore — art is decorative, gameplay is unaffected
+          // best-effort — art is decorative, gameplay is unaffected
         }
-      }
-      if (!cancelled && Object.keys(merged).length > 0) {
-        setAlbumArtMap((prev) => ({ ...prev, ...merged }));
       }
     })();
 
     return () => { cancelled = true; };
 
-  }, [gameTracks]);
+  }, [tracks]);
 
   useEffect(() => {
     const selected = isDaily
