@@ -89,6 +89,40 @@ export default function GamePage({
     setAlbumArtMap(map);
   }, [tracks]);
 
+  // Cached playlists come back without album art (the server loads it on
+  // demand), so fetch it for the tracks actually being played and merge it
+  // into albumArtMap — which the reveal card and the guess dropdown already
+  // read. Best-effort: the game plays fine if this fails.
+  useEffect(() => {
+    if (gameTracks.length === 0) return;
+    const missing = gameTracks
+      .filter((t) => !t.album_image)
+      .map((t) => t.id || t.track_id)
+      .filter(Boolean);
+    if (missing.length === 0) return;
+
+    let cancelled = false;
+    (async () => {
+      const merged = {};
+      // /tracks/art accepts up to 100 ids per request
+      for (let i = 0; i < missing.length; i += 100) {
+        const chunk = missing.slice(i, i + 100);
+        try {
+          const res = await api.get(`/tracks/art?ids=${chunk.join(',')}`);
+          Object.assign(merged, res.data?.art || {});
+        } catch (err) {
+          // ignore — art is decorative, gameplay is unaffected
+        }
+      }
+      if (!cancelled && Object.keys(merged).length > 0) {
+        setAlbumArtMap((prev) => ({ ...prev, ...merged }));
+      }
+    })();
+
+    return () => { cancelled = true; };
+
+  }, [gameTracks]);
+
   useEffect(() => {
     const selected = isDaily
       ? tracks.slice(0, songCount)
