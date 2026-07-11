@@ -65,6 +65,7 @@ chainlit.md
 
 # Data and databases
 agenthub/agents/youtube/db
+sql_boost/
 
 # Archive files and large assets
 **/*.zip
