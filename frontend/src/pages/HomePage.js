@@ -41,6 +41,7 @@ export default function HomePage({
   const [playersToday, setPlayersToday] = useState(null);
   const [challengeBanner, setChallengeBanner] = useState(null);
   const [featuredData, setFeaturedData] = useState([]);
+  const [fillStatus, setFillStatus] = useState(null); // { playable, total, pending } while previews load
 
   useEffect(() => {
     const fetchPlayers = () =>
@@ -154,11 +155,11 @@ export default function HomePage({
     }
     setLoading(true);
     setPlaylistLoaded(false);
+    setFillStatus(null);
     try {
       const resp = await api.get(`/playlist/${encodeURIComponent(target)}`);
       setPlaylistInfo(resp.data);
       saveToRecent(resp.data);
-      if (resp.data.warning) toast.warning(resp.data.warning);
       setTimeout(() => setPlaylistLoaded(true), 100);
     } catch (err) {
       const msg = err.response?.data?.detail || 'Failed to load playlist';
@@ -167,6 +168,54 @@ export default function HomePage({
       setLoading(false);
     }
   };
+
+  // While a big playlist's previews scrape in the background, poll the
+  // lightweight status endpoint so the playable count climbs live, then
+  // re-fetch the full track list once it settles. Keyed on playlist_id so it
+  // runs once per loaded playlist.
+  useEffect(() => {
+    const pid = playlistInfo?.playlist_id;
+    const total = playlistInfo?.total_in_playlist || 0;
+    const playable = playlistInfo?.total_tracks || 0;
+    if (!pid || total === 0 || playlistInfo?.fetch_complete === true || playable >= total) {
+      setFillStatus(null);
+      return;
+    }
+
+    let cancelled = false;
+    let timer = null;
+    let lastPlayable = playable;
+    let stable = 0;
+
+    const refreshFull = async () => {
+      try {
+        const res = await api.get(`/playlist/${pid}`);
+        if (!cancelled) setPlaylistInfo((prev) => (prev && prev.playlist_id === pid ? res.data : prev));
+      } catch { /* keep what we have */ }
+      if (!cancelled) setFillStatus(null);
+    };
+
+    const tick = async () => {
+      if (cancelled) return;
+      try {
+        const res = await api.get(`/playlist-status/${pid}`);
+        const d = res.data;
+        if (d.exists && !cancelled) {
+          setFillStatus({ playable: d.playable, total: d.total, pending: d.pending });
+          setPlaylistInfo((prev) => (prev && prev.playlist_id === pid ? { ...prev, total_tracks: d.playable } : prev));
+          if (d.playable > lastPlayable) { lastPlayable = d.playable; stable = 0; }
+          else { stable += 1; }
+          // done: nothing left, or growth stalled for ~12s (the last few tracks
+          // may have no preview on Spotify and never resolve)
+          if (d.pending === 0 || stable >= 5) { await refreshFull(); return; }
+        }
+      } catch { /* transient; keep polling */ }
+      if (!cancelled) timer = setTimeout(tick, 2500);
+    };
+
+    timer = setTimeout(tick, 2500);
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+  }, [playlistInfo?.playlist_id]); // eslint-disable-line
 
   const handleDemo = () => {
     setUrl(`https://open.spotify.com/playlist/${DEMO_PLAYLIST}`);
@@ -179,18 +228,34 @@ export default function HomePage({
     handleLoad(playlistUrl);
   };
 
-  const handleStart = () => {
-    if (!playlistInfo) return;
-    const count = songCount === 'all' ? playlistInfo.total_tracks : parseInt(songCount);
-    onStart(playlistInfo, { songCount: count, difficulty, gameMode, guessMode });
+  // If previews are still filling, grab the freshest full track list before
+  // starting so the game uses everything available right now, not the initial
+  // ~96. Returns the info to start with.
+  const freshestPlaylist = async () => {
+    if (!fillStatus || !playlistInfo?.playlist_id) return playlistInfo;
+    try {
+      const res = await api.get(`/playlist/${playlistInfo.playlist_id}`);
+      setPlaylistInfo(res.data);
+      return res.data;
+    } catch {
+      return playlistInfo;
+    }
   };
 
-  const handleChallengeRoom = () => {
+  const handleStart = async () => {
     if (!playlistInfo) return;
-    const count = songCount === 'all' ? playlistInfo.total_tracks : parseInt(songCount);
+    const info = await freshestPlaylist();
+    const count = songCount === 'all' ? info.total_tracks : parseInt(songCount);
+    onStart(info, { songCount: count, difficulty, gameMode, guessMode });
+  };
+
+  const handleChallengeRoom = async () => {
+    if (!playlistInfo) return;
+    const info = await freshestPlaylist();
+    const count = songCount === 'all' ? info.total_tracks : parseInt(songCount);
     onNavigate('room', {
-      playlistData: playlistInfo,
-      settings: { songCount: count, difficulty, gameMode, guessMode, playlistId: playlistInfo.playlist_id },
+      playlistData: info,
+      settings: { songCount: count, difficulty, gameMode, guessMode, playlistId: info.playlist_id },
       mode: 'create',
     });
   };
@@ -407,9 +472,32 @@ export default function HomePage({
                   <p className="font-heading text-base font-bold truncate" style={{ color: 'var(--color-text)' }}>
                     {playlistInfo.name}
                   </p>
-                  <p className="font-mono text-xs mt-1" style={{ color: 'var(--color-text-muted)' }}>
-                    {t('home.playableTracks', { count: playlistInfo.total_tracks })}
-                  </p>
+                  {fillStatus && fillStatus.pending > 0 ? (
+                    <div className="mt-1.5">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="font-mono text-[11px] flex items-center gap-1.5" style={{ color: 'var(--color-neon)' }}>
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                          {t('home.loadingPreviews')}
+                        </span>
+                        <span className="font-mono text-[11px]" style={{ color: 'var(--color-text-muted)' }}>
+                          {fillStatus.playable} / {fillStatus.total}
+                        </span>
+                      </div>
+                      <div className="w-full h-1 rounded-full overflow-hidden" style={{ backgroundColor: 'var(--color-surface-hl)' }}>
+                        <div
+                          className="h-full transition-all duration-700"
+                          style={{
+                            width: `${Math.round((fillStatus.playable / Math.max(fillStatus.total, 1)) * 100)}%`,
+                            backgroundColor: 'var(--color-neon)',
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="font-mono text-xs mt-1" style={{ color: 'var(--color-text-muted)' }}>
+                      {t('home.playableTracks', { count: playlistInfo.total_tracks })}
+                    </p>
+                  )}
                 </div>
               </div>
             </div>

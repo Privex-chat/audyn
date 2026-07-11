@@ -52,6 +52,7 @@ const ja = {
     challengeFriend: '⚔️ フレンドに挑戦',
     changePlaylist: 'プレイリストを変更',
     playableTracks: '再生可能: {count}トラック',
+    loadingPreviews: 'プレビューを読み込み中…',
     beatScore: '⚔️ {username}のスコア{score}を超えよう！',
     easy: 'イージー',
     easyDesc: '長いクリップ、考える時間が多い',
