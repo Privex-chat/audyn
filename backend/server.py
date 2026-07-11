@@ -319,7 +319,12 @@ async def get_api_token(http):
     return ""
 
 async def _spotify_get_with_retry(http, url, *, params=None, headers=None, attempts=3):
-    """GET that honours Spotify's Retry-After on 429. Returns response or None."""
+    """GET that honours Spotify's Retry-After on 429. Returns response or None.
+
+    Spotify hands out multi-hour Retry-After penalties (observed: ~12h) when an
+    app exceeds its quota. Waiting those out inside a user request is pointless
+    — fail fast so callers fall back to the embed path immediately.
+    """
     for _ in range(attempts):
         try:
             resp = await http.get(url, params=params, headers=headers)
@@ -331,7 +336,13 @@ async def _spotify_get_with_retry(http, url, *, params=None, headers=None, attem
                 wait = float(resp.headers.get("Retry-After", "2"))
             except ValueError:
                 wait = 2.0
-            await asyncio.sleep(min(wait + 0.5, 30))
+            if wait > 15:
+                logger.warning(
+                    f"Spotify API penalty active: Retry-After={wait:.0f}s "
+                    f"(~{wait / 3600:.1f}h) — not retrying, using embed fallback"
+                )
+                return None
+            await asyncio.sleep(wait + 0.5)
             continue
         return resp
     return None
@@ -359,7 +370,7 @@ async def fetch_all_track_metadata(http, token, playlist_id):
     # save_playlist's link guard keeps a partial fetch from shrinking the
     # stored playlist.
     offsets = list(range(0, min(total_tracks, 1500), 100))
-    semaphore = asyncio.Semaphore(4)
+    semaphore = asyncio.Semaphore(2)  # polite: bursts contribute to 429 penalties
 
     async def fetch_page(offset):
         async with semaphore:
@@ -493,7 +504,7 @@ async def batch_fetch_previews(http, track_ids):
             await asyncio.sleep(0.2)
     return results
 
-async def fetch_playlist_embed_only(http, playlist_id):
+async def fetch_playlist_embed_only(http, playlist_id, known_total: int = 0):
     """
     Fetch playlist data from Spotify's public embed page.
 
@@ -504,6 +515,13 @@ async def fetch_playlist_embed_only(http, playlist_id):
 
     Callers must use 'tracks_for_db' when writing to the database and 'tracks'
     when returning data to the frontend.
+
+    known_total: the playlist's real track count when the caller learned it
+    from the API (e.g. metadata request succeeded but page fetches 429'd).
+    The embed page caps trackList at ~100 entries and no longer carries a
+    trackCount field, so without known_total a big playlist's true size is
+    unknowable here — the result is flagged fetch_complete=False so it gets
+    a short cache TTL and is re-fetched once API access recovers.
     """
     resp = await http.get(
         f"https://open.spotify.com/embed/playlist/{playlist_id}",
@@ -530,7 +548,17 @@ async def fetch_playlist_embed_only(http, playlist_id):
     cover_sources = entity.get("coverArt", {}).get("sources", [])
     playlist_image = cover_sources[0]["url"] if cover_sources else ""
     track_list = entity.get("trackList", [])
-    total_stated = entity.get("trackCount", len(track_list))
+
+    EMBED_TRACKLIST_CAP = 100
+    authoritative_total = known_total or entity.get("trackCount", 0)
+    if authoritative_total:
+        total_stated = max(authoritative_total, len(track_list))
+        embed_truncated = len(track_list) < total_stated
+    else:
+        # No authoritative total anywhere. If the list hit the embed cap the
+        # playlist is almost certainly bigger than what we can see.
+        total_stated = len(track_list)
+        embed_truncated = len(track_list) >= EMBED_TRACKLIST_CAP
 
     # FIX: build two separate lists so that all playable tracks (even those
     # without a preview URL) are persisted to the DB for the worker to retry,
@@ -571,6 +599,13 @@ async def fetch_playlist_embed_only(http, playlist_id):
     # Count tracks that are not playable at all (local files, region-locked)
     skipped = sum(1 for t in track_list if not t.get("isPlayable", False))
 
+    # Complete only if we can see the whole playlist: every stated track is
+    # accounted for as playable-or-skipped and the list wasn't truncated.
+    fetch_complete = (
+        not embed_truncated
+        and (len(tracks_for_db) + skipped) >= total_stated
+    )
+
     return {
         "name": playlist_name,
         "image": playlist_image,
@@ -580,6 +615,7 @@ async def fetch_playlist_embed_only(http, playlist_id):
         "total_in_playlist": total_stated,
         "skipped_no_preview": skipped,
         "pending_preview_retry": pending_retry,
+        "fetch_complete": fetch_complete,
     }
 
 # ─── On-demand preview fill ─────────────────────────────────────────
@@ -787,8 +823,11 @@ async def _fetch_playlist_from_spotify(playlist_id: str) -> dict:
         )
 
         if not all_meta:
-            # API metadata fetch failed; fall back to embed.
-            result = await fetch_playlist_embed_only(http, playlist_id)
+            # API pages failed (e.g. 429 penalty); fall back to embed but keep
+            # the real total when the metadata request managed to report it.
+            result = await fetch_playlist_embed_only(
+                http, playlist_id, known_total=total_in_playlist
+            )
             tracks_for_db = result.pop("tracks_for_db", result["tracks"])
             return await _finalize_and_save(playlist_id, result, tracks_for_db)
 
@@ -887,6 +926,8 @@ async def _fetch_playlist_from_spotify(playlist_id: str) -> dict:
             "total_in_playlist": total_in_playlist,
             "skipped_no_preview": skipped,
             "pending_preview_retry": pending_retry,
+            # Partial page failures leave gaps a short cache TTL will re-fetch.
+            "fetch_complete": (len(tracks_for_db) + skipped) >= total_in_playlist,
             "source": "spotify",
         }
 
@@ -898,9 +939,19 @@ ALLOWED_AUDIO_DOMAINS = {
     "anon-podcast-api.spotifycdn.com",
 }
 
-@api_router.get("/audio-proxy")
-async def audio_proxy(url: str):
-    decoded_url = unquote(url)
+# When true, session clip responses hand the actual bytes off to nginx via
+# X-Accel-Redirect: nginx fetches from Spotify once per track and serves every
+# replay from its disk cache — Python never streams audio. Requires the
+# /_clip/ internal location (see docs/deployment.md).
+X_ACCEL_AUDIO = os.environ.get("X_ACCEL_AUDIO", "false").lower() == "true"
+
+_AUDIO_HEADERS = {
+    "Accept-Ranges": "bytes",
+    "Cache-Control": "public, max-age=3600",
+    "Access-Control-Allow-Origin": "*",
+}
+
+def _validated_audio_url(decoded_url: str):
     parsed = urlparse(decoded_url)
     if parsed.hostname not in ALLOWED_AUDIO_DOMAINS:
         raise HTTPException(
@@ -910,17 +961,16 @@ async def audio_proxy(url: str):
         raise HTTPException(status_code=400, detail="Invalid URL scheme")
     if parsed.username or parsed.password:
         raise HTTPException(status_code=400, detail="Invalid URL")
+    return parsed
 
+def _stream_upstream_audio(decoded_url: str):
+    """Proxy-stream an allowed CDN audio URL, caching small files in memory."""
     cached_bytes = _audio_cache.get(decoded_url)
     if cached_bytes is not None:
         return Response(
             content=cached_bytes,
             media_type="audio/mpeg",
-            headers={
-                "Accept-Ranges": "bytes",
-                "Cache-Control": "public, max-age=3600",
-                "Access-Control-Allow-Origin": "*",
-            },
+            headers=dict(_AUDIO_HEADERS),
         )
 
     MAX_CACHE_SIZE = 1_048_576  # 1 MB
@@ -954,12 +1004,68 @@ async def audio_proxy(url: str):
     return StreamingResponse(
         stream_audio(),
         media_type="audio/mpeg",
-        headers={
-            "Accept-Ranges": "bytes",
-            "Cache-Control": "public, max-age=3600",
-            "Access-Control-Allow-Origin": "*",
-        },
+        headers=dict(_AUDIO_HEADERS),
     )
+
+@api_router.get("/audio-proxy")
+async def audio_proxy(url: str):
+    # Legacy path for pre-session app versions; new clients use the opaque
+    # /sessions/{id}/clip/{round} endpoint which never exposes the CDN URL.
+    decoded_url = unquote(url)
+    _validated_audio_url(decoded_url)
+    return _stream_upstream_audio(decoded_url)
+
+@api_router.get("/sessions/{session_id}/clip/{round_no}")
+async def get_session_clip(session_id: str, round_no: int):
+    """Serve the audio for one round of a game session.
+
+    The URL is an opaque capability: possession of the unguessable session_id
+    is the auth (Howler can't send Authorization headers), and nothing in the
+    request or response identifies the track — that's the anti-cheat point.
+    """
+    if len(session_id) > 64 or round_no < 0 or round_no >= 1000:
+        raise HTTPException(status_code=400, detail="Invalid clip request")
+
+    async with get_conn() as conn:
+        row = await conn.fetchrow(
+            "SELECT tracks FROM game_sessions WHERE session_id = $1 AND expires_at > NOW()",
+            session_id,
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        from sessions import _load_tracks_json, _entry_by_position
+        tracks_data = _load_tracks_json(row["tracks"])
+        tid, entry = _entry_by_position(tracks_data, round_no)
+        if entry is None or not entry.get("preview_url"):
+            raise HTTPException(status_code=404, detail="No clip for this round")
+
+        # First fetch of this round starts the server-side timer used for
+        # ticking-away scoring.
+        if entry.get("started_at") is None:
+            await conn.execute(
+                """
+                UPDATE game_sessions
+                SET tracks = jsonb_set(tracks, ARRAY[$1::text, 'started_at'], to_jsonb($2::float8))
+                WHERE session_id = $3
+                """,
+                tid,
+                time.time(),
+                session_id,
+            )
+
+    parsed = _validated_audio_url(entry["preview_url"])
+
+    if X_ACCEL_AUDIO and parsed.hostname == "p.scdn.co":
+        accel = f"/_clip{parsed.path}"
+        if parsed.query:
+            accel += f"?{parsed.query}"
+        return Response(
+            status_code=200,
+            headers={**_AUDIO_HEADERS, "X-Accel-Redirect": accel},
+        )
+
+    return _stream_upstream_audio(entry["preview_url"])
 
 @api_router.get("/")
 async def root():
@@ -1006,7 +1112,16 @@ async def get_playlist(
 
     pending = result.get("pending_preview_retry", 0)
     skipped = result.get("skipped_no_preview", 0)
-    if pending > 0 or skipped > 0:
+    if result.get("fetch_complete") is False:
+        # Degraded fetch (Spotify API rate-limit penalty): the visible track
+        # list may be truncated and the stated total may be a lower bound.
+        result["warning"] = (
+            f"Spotify is limiting our data access right now — loaded "
+            f"{result['total_tracks']} playable tracks so far. If your playlist "
+            f"is bigger, the rest will load automatically once access recovers "
+            f"(usually within a day)."
+        )
+    elif pending > 0 or skipped > 0:
         parts = []
         if pending > 0:
             parts.append(

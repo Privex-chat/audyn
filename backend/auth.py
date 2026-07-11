@@ -115,7 +115,9 @@ bearer = HTTPBearer(auto_error=False)
 
 JWT_SECRET = os.environ.get("JWT_SECRET", "")
 JWT_ALGO = "HS256"
-JWT_EXPIRE_HOURS = 72
+# 90 days — 72h was logging players out mid-week; there's no refresh flow,
+# so token lifetime IS the session lifetime. Override via env if needed.
+JWT_EXPIRE_HOURS = int(os.environ.get("JWT_EXPIRE_HOURS", str(24 * 90)))
 
 if not JWT_SECRET:
     logger.warning("JWT_SECRET not set — auth endpoints will fail")

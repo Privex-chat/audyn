@@ -179,15 +179,18 @@ export default function HomePage({
     handleLoad(playlistUrl);
   };
 
+  // Sessions cap at 100 rounds server-side; mirror it so "All" is honest.
+  const MAX_ROUNDS = 100;
+
   const handleStart = () => {
     if (!playlistInfo) return;
-    const count = songCount === 'all' ? playlistInfo.total_tracks : parseInt(songCount);
+    const count = songCount === 'all' ? Math.min(playlistInfo.total_tracks, MAX_ROUNDS) : parseInt(songCount);
     onStart(playlistInfo, { songCount: count, difficulty, gameMode, guessMode });
   };
 
   const handleChallengeRoom = () => {
     if (!playlistInfo) return;
-    const count = songCount === 'all' ? playlistInfo.total_tracks : parseInt(songCount);
+    const count = songCount === 'all' ? Math.min(playlistInfo.total_tracks, MAX_ROUNDS) : parseInt(songCount);
     onNavigate('room', {
       playlistData: playlistInfo,
       settings: { songCount: count, difficulty, gameMode, guessMode, playlistId: playlistInfo.playlist_id },
@@ -438,7 +441,7 @@ export default function HomePage({
                 >
                   {[5, 10, 25, 50, 'all'].map((n) => (
                     <SelectItem key={n} value={String(n)} style={{ color: 'var(--color-text)' }}>
-                      {n === 'all' ? `All (${playlistInfo.total_tracks})` : `${n} ${t('home.songs').toLowerCase()}`}
+                      {n === 'all' ? `All (${Math.min(playlistInfo.total_tracks, 100)})` : `${n} ${t('home.songs').toLowerCase()}`}
                     </SelectItem>
                   ))}
                 </SelectContent>
