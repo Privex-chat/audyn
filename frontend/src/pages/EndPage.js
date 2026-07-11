@@ -418,6 +418,7 @@ export function ResultCard({
   useEffect(() => {
     const canvas = ref.current;
     if (!canvas) return;
+    let cancelled = false;
     const date = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
     drawResultCard(canvas, {
       score, maxScore, correctGuesses, totalTracks, percentage,
@@ -426,7 +427,8 @@ export function ResultCard({
       gameMode, guessMode, isDaily,
       emojiGrid, greenCount, yellowCount, redCount,
       username, displayName, date,
-    }).catch(() => {});
+    }, () => cancelled).catch((err) => console.error('drawResultCard failed', err));
+    return () => { cancelled = true; };
   }, [ref, score, maxScore, correctGuesses, totalTracks, percentage, playlistName,
       playlistImage, diffColor, difficulty, difficultyKey, gameMode, guessMode, isDaily,
       emojiGrid, greenCount, yellowCount, redCount, username, displayName]);
