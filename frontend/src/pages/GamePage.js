@@ -7,7 +7,7 @@ import { DIFFICULTY_MODES, DEFAULT_DIFFICULTY, calculateTimePressureScore } from
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useAuth } from '@/context/AuthContext';
 import { useLanguage } from '@/context/LanguageContext';
-import { normalizeText, matchesQuery } from '@/lib/search';
+import { normalizeText, normalizeLoose, matchesQuery, matchesArtist, splitArtistsRaw } from '@/lib/search';
 
 function getStreakMultiplier(count) {
   if (count >= 7) return 2.0;
@@ -76,6 +76,7 @@ export default function GamePage({
 
   const shuffledAllTracksRef = useRef(null);
   const searchIndexRef = useRef(null);
+  const artistIndexRef = useRef(null); // distinct individual artists for artist mode
   const debounceRef = useRef(null);
   const pendingScoresRef = useRef([]);
   const sessionIdRef = useRef(null); // FIX-03: server-side session id
@@ -132,10 +133,27 @@ export default function GamePage({
 
     if (!shuffledAllTracksRef.current) {
       shuffledAllTracksRef.current = [...tracks].sort(() => Math.random() - 0.5);
+      // Loose-normalized index for forgiving dropdown surfacing (quotes,
+      // dashes, accents, etc.). Song correctness is still by track id.
       searchIndexRef.current = shuffledAllTracksRef.current.map(t => ({
-        name: normalizeText(t.name),
-        artist: normalizeText(t.artist),
+        name: normalizeLoose(t.name),
+        artist: normalizeLoose(t.artist),
       }));
+      // Distinct INDIVIDUAL artists across the whole pool, so the artist
+      // dropdown lists each collaborator once ("Drake", "21 Savage", "Future")
+      // instead of confusing full collab strings.
+      const seen = new Set();
+      const artistPool = [];
+      for (const t of tracks) {
+        for (const a of splitArtistsRaw(t.artist)) {
+          const key = normalizeText(a);
+          if (key && !seen.has(key)) {
+            seen.add(key);
+            artistPool.push({ display: a, key, loose: normalizeLoose(a) });
+          }
+        }
+      }
+      artistIndexRef.current = artistPool;
     }
 
     (async () => {
@@ -298,13 +316,9 @@ export default function GamePage({
 
   const checkGuessCorrect = (guessItem, currentTrack) => {
     if (guessMode === 'artist') {
-      const guessStr = (guessItem.artistName || guessItem.artist || '').toLowerCase().trim();
-      const trackArtist = currentTrack.artist.toLowerCase().trim();
-      if (!guessStr || guessStr.length < 2) return false;
-
-      if (guessStr === trackArtist) return true;
-      const artistParts = trackArtist.split(/,\s*/);
-      return artistParts.some(part => part.trim() === guessStr);
+      // Same judge the backend uses (matching.py) so guests and logged-in
+      // players get identical results: any credited artist, accent-forgiving.
+      return matchesArtist(guessItem.artistName || guessItem.artist || '', currentTrack.artist);
     }
 
     const guessId = guessItem.id || guessItem.track_id;
@@ -526,20 +540,15 @@ export default function GamePage({
   const searchPool = shuffledAllTracksRef.current || tracks;
 
   const filteredItems = useMemo(() => {
-    const q = normalizeText(guessQuery);
+    const q = normalizeLoose(guessQuery);
     if (q.length === 0) return [];
 
     if (guessMode === 'artist') {
-
-      const seen = new Set();
+      const pool = artistIndexRef.current || [];
       const items = [];
-      for (let i = 0; i < searchPool.length; i++) {
-        const t = searchPool[i];
-        const idx = searchIndexRef.current?.[i];
-        const key = idx ? idx.artist : normalizeText(t.artist);
-        if (!seen.has(key) && matchesQuery(key, q)) {
-          seen.add(key);
-          items.push({ artistName: t.artist, artist: t.artist, id: `artist:${key}` });
+      for (const a of pool) {
+        if (matchesQuery(a.loose, q)) {
+          items.push({ artistName: a.display, artist: a.display, id: `artist:${a.key}` });
           if (items.length >= 7) break;
         }
       }

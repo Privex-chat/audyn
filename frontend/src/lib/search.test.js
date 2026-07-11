@@ -1,4 +1,32 @@
-import { normalizeText, matchesQuery, splitArtists, matchesArtist } from './search';
+import { normalizeText, normalizeLoose, matchesQuery, splitArtists, splitArtistsRaw, matchesArtist } from './search';
+
+describe('normalizeLoose (surfacing) elides quotes/apostrophes', () => {
+  test("contractions match without the apostrophe", () => {
+    expect(normalizeLoose("Don't Stop Me Now")).toBe('dont stop me now');
+    expect(matchesQuery(normalizeLoose("Don't Stop Me Now"), normalizeLoose('dont stop'))).toBe(true);
+  });
+  test('curly quotes and possessives', () => {
+    expect(normalizeLoose('It’s My Life')).toBe('its my life');
+    expect(normalizeLoose('“Heroes”')).toBe('heroes');
+  });
+  test("Rock 'n' Roll", () => {
+    expect(normalizeLoose("Rock 'n' Roll")).toBe('rock n roll');
+  });
+  test('still forgiving on symbols/accents like normalizeText', () => {
+    expect(normalizeLoose('>one - greater than one')).toBe('one greater than one');
+    expect(normalizeLoose('Señorita')).toBe('senorita');
+  });
+});
+
+describe('splitArtistsRaw keeps display casing, deduped', () => {
+  test('comma + feat', () => {
+    expect(splitArtistsRaw('Drake, 21 Savage')).toEqual(['Drake', '21 Savage']);
+    expect(splitArtistsRaw('Calvin Harris feat. Dua Lipa')).toEqual(['Calvin Harris', 'Dua Lipa']);
+  });
+  test('dedupes case-insensitively', () => {
+    expect(splitArtistsRaw('Drake, drake')).toEqual(['Drake']);
+  });
+});
 
 describe('normalizeText', () => {
   test('strips symbols/punctuation (the >one case)', () => {
@@ -44,6 +72,11 @@ describe('splitArtists', () => {
     expect(splitArtists('Daft Punk')).toEqual(['daft punk']);
     expect(splitArtists('Bill Withers')).toEqual(['bill withers']);
     expect(splitArtists('Xscape')).toEqual(['xscape']);
+  });
+  test('word boundary is Unicode-aware around non-ASCII letters (matches Python \\b)', () => {
+    // "é" is a word char in Python's Unicode \b, so no boundary before "feat" -> no split.
+    expect(splitArtists('Beyoncéfeat. Jay-Z')).toEqual(['beyoncefeat jay z']);
+    expect(splitArtists('Beyoncé feat. Jay-Z')).toEqual(['beyonce', 'jay z']);
   });
 });
 
