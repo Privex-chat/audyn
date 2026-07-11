@@ -27,6 +27,17 @@ export function normalizeText(s) {
     .trim();
 }
 
+// Apostrophes and quote glyphs — elided (removed, not spaced) so contractions
+// and possessives match when typed without them.
+const QUOTES = /['‘’‛`´ʼ"“”«»]/g;
+
+// Looser normalization for DROPDOWN SURFACING ONLY (never correctness): elides
+// quotes/apostrophes so "Dont" finds "Don't", "rocknroll" finds "Rock 'n' Roll".
+// Correctness stays on strict normalizeText, which the backend mirrors.
+export function normalizeLoose(s) {
+  return normalizeText((s || '').replace(QUOTES, ''));
+}
+
 // Surfacing test: substring match, or all query tokens present in any order.
 export function matchesQuery(normHaystack, normQuery) {
   if (!normQuery) return false;
@@ -37,7 +48,9 @@ export function matchesQuery(normHaystack, normQuery) {
 // Separators Spotify (and people) use between collaborating artists.
 // Word-bounded on the alphabetic tokens so they don't match mid-name, e.g.
 // "x" in "Xscape", "ft" in "Daft Punk", "with" in "Bill Withers".
-const ARTIST_SEP = /\s*(?:,|&|\/|\+|×|\bfeat\.?\b|\bft\.?\b|\bfeaturing\b|\bwith\b|\bx\b)\s*/gi;
+// Mirrors backend/matching.py _ARTIST_SEP exactly (dot consumed after the word
+// boundary so "feat." doesn't leak into the next name).
+const ARTIST_SEP = /\s*(?:,|&|\/|\+|×|\b(?:feat|ft|featuring|with|x)\b\.?)\s*/gi;
 
 // Split a raw artist field into individual normalized artist names.
 // "Drake, 21 Savage" → ["drake", "21 savage"]; "A feat. B" → ["a", "b"].
@@ -48,6 +61,21 @@ export function splitArtists(rawArtist) {
   for (const part of rawArtist.split(ARTIST_SEP)) {
     const n = normalizeText(part);
     if (n && !seen.has(n)) { seen.add(n); out.push(n); }
+  }
+  return out;
+}
+
+// Same split but keeping each artist's ORIGINAL display text (for the artist
+// dropdown), deduped by normalized form.
+// "Drake, 21 Savage" → ["Drake", "21 Savage"].
+export function splitArtistsRaw(rawArtist) {
+  if (!rawArtist) return [];
+  const seen = new Set();
+  const out = [];
+  for (const part of rawArtist.split(ARTIST_SEP)) {
+    const trimmed = part.trim();
+    const key = normalizeText(trimmed);
+    if (key && !seen.has(key)) { seen.add(key); out.push(trimmed); }
   }
   return out;
 }
