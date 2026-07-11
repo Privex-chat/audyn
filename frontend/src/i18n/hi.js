@@ -74,6 +74,7 @@ const hi = {
     tapToUnlock: 'ऑडियो अनलॉक करने के लिए कहीं भी टैप करें',
     listening: 'सुन रहे हैं...',
     ready: 'तैयार',
+    tapReplay: 'दोबारा सुनें',
     loadingAudio: 'लोड हो रहा है...',
     skipped: 'छोड़ दिया',
     audioError: 'ऑडियो त्रुटि',

@@ -74,6 +74,7 @@ const ko = {
       tapToUnlock: '화면을 탭하여 오디오를 활성화하세요',
       listening: '듣는 중...',
       ready: '준비 완료',
+      tapReplay: '다시 재생',
       loadingAudio: '로딩 중...',
       skipped: '건너뜀',
       audioError: '오디오 오류',

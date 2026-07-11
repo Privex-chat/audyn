@@ -74,6 +74,7 @@ const ja = {
     tapToUnlock: '画面をタップしてオーディオを有効にしてください',
     listening: '再生中...',
     ready: '準備完了',
+    tapReplay: 'もう一度再生',
     loadingAudio: '読み込み中...',
     skipped: 'スキップ',
     audioError: 'オーディオエラー',
