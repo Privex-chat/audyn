@@ -1,13 +1,13 @@
 const FEATURED_PLAYLISTS = {
   en: [
     {
-      id: '37i9dQZF1DXcBWIGoYBM5M',   // ✅ Verified — 34.4M saves
-      fallbackName: "Today's Top Hits",
+      id: '0WU4ICZuYjHDnsUZJWz9D7?si=4442a6a1a9e841a3',   // ✅ Verified — 34.4M saves
+      fallbackName: "Biking Vibes (popular)",
       fallbackImage: '',
     },
     {
-      id: '37i9dQZF1DX0XUsuxWHRQd',   // ✅ Verified — 15.8M saves
-      fallbackName: 'RapCaviar',
+      id: '37i9dQZF1DXcBWIGoYBM5M',   // ✅ Verified — 34.4M saves
+      fallbackName: "Today's Top Hits",
       fallbackImage: '',
     },
     {
