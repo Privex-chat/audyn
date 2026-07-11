@@ -21,6 +21,21 @@ async def init_db():
     )
     async with _pool.acquire() as conn:
         await conn.fetchval("SELECT 1")
+        # Lightweight self-migration (idempotent) so rolling deploys don't
+        # depend on someone remembering to re-run schema.sql. Only a missing
+        # table is ignorable (fresh DB — schema.sql creates the column);
+        # permission/SQL errors must fail startup loudly, because a silently
+        # skipped migration would break every playlist save afterwards.
+        try:
+            await conn.execute(
+                "ALTER TABLE playlists ADD COLUMN IF NOT EXISTS "
+                "fetch_complete BOOLEAN DEFAULT TRUE"
+            )
+        except asyncpg.exceptions.UndefinedTableError:
+            logger.info(
+                "Self-migration skipped: playlists table not created yet "
+                "(run schema.sql for a fresh install)"
+            )
     logger.info("PostgreSQL connection pool created")
 
 async def close_db():

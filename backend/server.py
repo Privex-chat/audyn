@@ -8,7 +8,6 @@ from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Query
 from fastapi.responses import StreamingResponse, Response
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
-from fastapi.middleware.gzip import GZipMiddleware
 from contextlib import asynccontextmanager
 
 import os
@@ -30,6 +29,12 @@ from db_playlists import (
     save_playlist as save_playlist_to_db,
     get_album_art_from_db,
     save_album_art_to_db,
+)
+from preview_store import (
+    get_missing_preview_track_ids,
+    mark_recovered,
+    mark_failed,
+    mark_unavailable,
 )
 from auth import auth_router, get_current_user, require_user
 from scoring import score_router
@@ -115,9 +120,18 @@ class RateLimiter:
         self._requests: dict[str, list[float]] = {}
         self.max_requests = max_requests
         self.window = window_seconds
+        self._last_cleanup = time.time()
 
     def is_allowed(self, ip: str) -> bool:
         now = time.time()
+        # Evict idle IPs periodically — otherwise the dict grows one entry per
+        # IP ever seen and never shrinks.
+        if now - self._last_cleanup > 300:
+            self._last_cleanup = now
+            cutoff = now - self.window
+            self._requests = {
+                k: v for k, v in self._requests.items() if v and v[-1] >= cutoff
+            }
         if ip not in self._requests:
             self._requests[ip] = []
         self._requests[ip] = [t for t in self._requests[ip] if now - t < self.window]
@@ -304,14 +318,44 @@ async def get_api_token(http):
         logger.warning(f"Token error: {e}")
     return ""
 
+async def _spotify_get_with_retry(http, url, *, params=None, headers=None, attempts=3):
+    """GET that honours Spotify's Retry-After on 429. Returns response or None.
+
+    Spotify hands out multi-hour Retry-After penalties (observed: ~12h) when an
+    app exceeds its quota. Waiting those out inside a user request is pointless
+    — fail fast so callers fall back to the embed path immediately.
+    """
+    for _ in range(attempts):
+        try:
+            resp = await http.get(url, params=params, headers=headers)
+        except Exception as e:
+            logger.warning(f"Spotify request failed: {e}")
+            return None
+        if resp.status_code == 429:
+            try:
+                wait = float(resp.headers.get("Retry-After", "2"))
+            except ValueError:
+                wait = 2.0
+            if wait > 15:
+                logger.warning(
+                    f"Spotify API penalty active: Retry-After={wait:.0f}s "
+                    f"(~{wait / 3600:.1f}h) — not retrying, using embed fallback"
+                )
+                return None
+            await asyncio.sleep(wait + 0.5)
+            continue
+        return resp
+    return None
+
 async def fetch_all_track_metadata(http, token, playlist_id):
     api_headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-    meta_resp = await http.get(
+    meta_resp = await _spotify_get_with_retry(
+        http,
         f"https://api.spotify.com/v1/playlists/{playlist_id}",
         params={"fields": "name,images,tracks.total"},
         headers=api_headers,
     )
-    if meta_resp.status_code != 200:
+    if meta_resp is None or meta_resp.status_code != 200:
         return "", "", [], 0
 
     meta = meta_resp.json()
@@ -321,23 +365,37 @@ async def fetch_all_track_metadata(http, token, playlist_id):
     total_tracks = meta.get("tracks", {}).get("total", 0)
     logger.info(f"Spotify API: '{playlist_name}' — {total_tracks} tracks")
 
+    # All page offsets are known upfront, so fetch them concurrently (bounded)
+    # instead of one-by-one with sleeps. A failed page yields a partial fetch;
+    # save_playlist's link guard keeps a partial fetch from shrinking the
+    # stored playlist.
+    offsets = list(range(0, min(total_tracks, 1500), 100))
+    semaphore = asyncio.Semaphore(2)  # polite: bursts contribute to 429 penalties
+
+    async def fetch_page(offset):
+        async with semaphore:
+            resp = await _spotify_get_with_retry(
+                http,
+                f"https://api.spotify.com/v1/playlists/{playlist_id}/tracks",
+                params={
+                    "offset": offset,
+                    "limit": 100,
+                    "fields": "items(track(id,name,duration_ms,artists,album(name,images),explicit,popularity)),next",
+                },
+                headers=api_headers,
+            )
+            if resp is None or resp.status_code != 200:
+                return offset, None
+            return offset, resp.json().get("items", [])
+
+    pages = await asyncio.gather(*(fetch_page(o) for o in offsets))
+
     all_meta = []
-    offset = 0
-    while offset < total_tracks and offset < 1500:
-        resp = await http.get(
-            f"https://api.spotify.com/v1/playlists/{playlist_id}/tracks",
-            params={
-                "offset": offset,
-                "limit": 100,
-                "fields": "items(track(id,name,duration_ms,artists,album(name,images),explicit,popularity)),next",
-            },
-            headers=api_headers,
-        )
-        if resp.status_code != 200:
-            break
-        items = resp.json().get("items", [])
-        if not items:
-            break
+    failed_pages = 0
+    for _offset, items in sorted(pages, key=lambda p: p[0]):
+        if items is None:
+            failed_pages += 1
+            continue
         for item in items:
             t = item.get("track")
             if not t or not t.get("id"):
@@ -366,10 +424,12 @@ async def fetch_all_track_metadata(http, token, playlist_id):
                     "popularity": t.get("popularity", 0),
                 }
             )
-        offset += 100
-        logger.info(f"  metadata: {min(offset, total_tracks)}/{total_tracks}")
-        if offset < total_tracks:
-            await asyncio.sleep(0.1)
+
+    if failed_pages:
+        logger.warning(
+            f"Metadata fetch partial for {playlist_id}: {failed_pages}/{len(offsets)} pages failed"
+        )
+    logger.info(f"  metadata: {len(all_meta)}/{total_tracks} tracks fetched")
 
     return playlist_name, playlist_image, all_meta, total_tracks
 
@@ -444,7 +504,7 @@ async def batch_fetch_previews(http, track_ids):
             await asyncio.sleep(0.2)
     return results
 
-async def fetch_playlist_embed_only(http, playlist_id):
+async def fetch_playlist_embed_only(http, playlist_id, known_total: int = 0):
     """
     Fetch playlist data from Spotify's public embed page.
 
@@ -455,6 +515,13 @@ async def fetch_playlist_embed_only(http, playlist_id):
 
     Callers must use 'tracks_for_db' when writing to the database and 'tracks'
     when returning data to the frontend.
+
+    known_total: the playlist's real track count when the caller learned it
+    from the API (e.g. metadata request succeeded but page fetches 429'd).
+    The embed page caps trackList at ~100 entries and no longer carries a
+    trackCount field, so without known_total a big playlist's true size is
+    unknowable here — the result is flagged fetch_complete=False so it gets
+    a short cache TTL and is re-fetched once API access recovers.
     """
     resp = await http.get(
         f"https://open.spotify.com/embed/playlist/{playlist_id}",
@@ -481,7 +548,17 @@ async def fetch_playlist_embed_only(http, playlist_id):
     cover_sources = entity.get("coverArt", {}).get("sources", [])
     playlist_image = cover_sources[0]["url"] if cover_sources else ""
     track_list = entity.get("trackList", [])
-    total_stated = entity.get("trackCount", len(track_list))
+
+    EMBED_TRACKLIST_CAP = 100
+    authoritative_total = known_total or entity.get("trackCount", 0)
+    if authoritative_total:
+        total_stated = max(authoritative_total, len(track_list))
+        embed_truncated = len(track_list) < total_stated
+    else:
+        # No authoritative total anywhere. If the list hit the embed cap the
+        # playlist is almost certainly bigger than what we can see.
+        total_stated = len(track_list)
+        embed_truncated = len(track_list) >= EMBED_TRACKLIST_CAP
 
     # FIX: build two separate lists so that all playable tracks (even those
     # without a preview URL) are persisted to the DB for the worker to retry,
@@ -522,6 +599,13 @@ async def fetch_playlist_embed_only(http, playlist_id):
     # Count tracks that are not playable at all (local files, region-locked)
     skipped = sum(1 for t in track_list if not t.get("isPlayable", False))
 
+    # Complete only if we can see the whole playlist: every stated track is
+    # accounted for as playable-or-skipped and the list wasn't truncated.
+    fetch_complete = (
+        not embed_truncated
+        and (len(tracks_for_db) + skipped) >= total_stated
+    )
+
     return {
         "name": playlist_name,
         "image": playlist_image,
@@ -531,7 +615,148 @@ async def fetch_playlist_embed_only(http, playlist_id):
         "total_in_playlist": total_stated,
         "skipped_no_preview": skipped,
         "pending_preview_retry": pending_retry,
+        "fetch_complete": fetch_complete,
     }
+
+# ─── On-demand preview fill ─────────────────────────────────────────
+# When a playlist is served with tracks missing preview URLs, recover them in
+# the background within minutes instead of waiting for the preview worker's
+# 30-minute cycle (hours for a big playlist). The worker stays as the janitor
+# for tracks these fills never reach (process restarts, rate-limit aborts).
+
+_preview_fill_tasks: dict[str, asyncio.Task] = {}
+# Per-playlist cooldown so repeated cache hits don't re-scan the same playlist.
+_preview_fill_cooldown = TTLCache(max_size=500, ttl_seconds=1800)
+# Global scrape concurrency across ALL fills — this is what keeps a burst of
+# fresh playlists from hammering Spotify's embed endpoint.
+# ponytail: per-process guards; two API processes can duplicate a fill, which
+# only costs redundant scrapes (writes are idempotent).
+_preview_fill_semaphore = asyncio.Semaphore(3)
+PREVIEW_FILL_MAX_TRACKS = 400
+PREVIEW_FILL_SPACING = 0.4  # seconds a slot is held after each request
+
+def _start_preview_fill(playlist_id: str):
+    """Kick off a background fill for a playlist, at most once per cooldown."""
+    if playlist_id in _preview_fill_tasks or _preview_fill_cooldown.get(playlist_id):
+        return
+    _preview_fill_cooldown.set(playlist_id, True)
+    task = asyncio.create_task(_run_preview_fill(playlist_id))
+    _preview_fill_tasks[playlist_id] = task
+    task.add_done_callback(lambda _t: _preview_fill_tasks.pop(playlist_id, None))
+
+async def _run_preview_fill(playlist_id: str):
+    try:
+        track_ids = await get_missing_preview_track_ids(
+            playlist_id, limit=PREVIEW_FILL_MAX_TRACKS
+        )
+        if not track_ids:
+            return
+        logger.info(f"Preview fill: {len(track_ids)} tracks queued for {playlist_id}")
+
+        recovered: dict[str, str] = {}
+        failed: list[str] = []
+        unavailable: list[str] = []
+        rate_limited = False
+
+        async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as http:
+
+            async def fetch_one(tid: str):
+                nonlocal rate_limited
+                if rate_limited:
+                    return
+                async with _preview_fill_semaphore:
+                    if rate_limited:
+                        return
+                    try:
+                        resp = await http.get(
+                            f"https://open.spotify.com/embed/track/{tid}",
+                            headers=BROWSER_HEADERS,
+                        )
+                    except Exception:
+                        failed.append(tid)
+                        return
+                    if resp.status_code == 429:
+                        # Leave the rest untouched for the worker/next fill.
+                        rate_limited = True
+                        return
+                    if resp.status_code == 404:
+                        unavailable.append(tid)
+                        return
+                    if resp.status_code != 200:
+                        failed.append(tid)
+                        return
+                    entity = (
+                        parse_embed_next_data(resp.text)
+                        .get("props", {})
+                        .get("pageProps", {})
+                        .get("state", {})
+                        .get("data", {})
+                        .get("entity", {})
+                    )
+                    url = (entity.get("audioPreview") or {}).get("url", "")
+                    if url:
+                        recovered[tid] = url
+                        preview_cache.set(f"preview:{tid}", url)
+                    else:
+                        failed.append(tid)
+                    await asyncio.sleep(PREVIEW_FILL_SPACING)
+
+            await asyncio.gather(*(fetch_one(tid) for tid in track_ids))
+
+        await mark_recovered(recovered)
+        await mark_unavailable(unavailable)
+        await mark_failed(failed)  # only ever contains tracks actually attempted
+
+        if recovered:
+            # Serve the fuller DB view on the next request for this playlist.
+            memory_cache.delete(playlist_id)
+
+        status = "aborted on 429" if rate_limited else "complete"
+        logger.info(
+            f"Preview fill {status} for {playlist_id}: "
+            f"{len(recovered)} recovered, {len(failed)} failed, "
+            f"{len(unavailable)} unavailable of {len(track_ids)} queued"
+        )
+    except Exception as e:
+        logger.warning(f"Preview fill failed for {playlist_id}: {e}")
+
+# Single-flight guard: concurrent requests for the same uncached playlist
+# share one Spotify fetch instead of each launching their own (cache stampede).
+_playlist_fetches: dict[str, asyncio.Task] = {}
+
+async def _finalize_and_save(playlist_id: str, result: dict, tracks_for_db: list) -> dict:
+    """Persist a fetch result, then serve whichever view is larger: this fetch
+    or the DB (which may hold worker-recovered previews and links preserved
+    across a degraded fetch)."""
+    save_result = dict(result)
+    save_result["tracks"] = tracks_for_db
+    try:
+        await save_playlist_to_db(playlist_id, save_result)
+    except Exception as e:
+        logger.warning(f"DB save failed: {e}")
+
+    # Recover missing previews in the background; no-op if nothing is missing.
+    _start_preview_fill(playlist_id)
+
+    try:
+        db_result = await load_playlist_from_db(playlist_id)
+        if db_result and db_result["total_tracks"] > result["total_tracks"]:
+            total = result.get("total_in_playlist") or db_result.get("total_in_playlist") or 0
+            skipped = db_result.get("skipped_no_preview") or 0
+            db_result["pending_preview_retry"] = max(
+                0, total - db_result["total_tracks"] - skipped
+            )
+            logger.info(
+                f"Serving merged DB view for {playlist_id}: "
+                f"{db_result['total_tracks']} tracks (fetch returned {result['total_tracks']})"
+            )
+            memory_cache.set(playlist_id, db_result)
+            return db_result
+    except Exception as e:
+        logger.warning(f"DB merge after save failed: {e}")
+
+    memory_cache.set(playlist_id, result)
+    return result
 
 async def fetch_playlist(playlist_id: str, force_refresh: bool = False) -> dict:
     """
@@ -539,7 +764,8 @@ async def fetch_playlist(playlist_id: str, force_refresh: bool = False) -> dict:
     1. In-memory hot cache (10 min)         — skipped when force_refresh=True
     2. PostgreSQL persistent cache (7 days) — skipped when force_refresh=True;
                                               stale record is deleted first
-    3. Full Spotify fetch (API + embed)     — always runs when force_refresh=True
+    3. Full Spotify fetch (API + embed)     — always runs when force_refresh=True;
+                                              concurrent callers share one fetch
     """
     if not force_refresh:
         cached = memory_cache.get(playlist_id)
@@ -551,6 +777,9 @@ async def fetch_playlist(playlist_id: str, force_refresh: bool = False) -> dict:
             db_result = await load_playlist_from_db(playlist_id)
             if db_result:
                 memory_cache.set(playlist_id, db_result)
+                # A cached playlist can still have tracks awaiting previews
+                # (e.g. the process restarted mid-fill) — resume recovery.
+                _start_preview_fill(playlist_id)
                 return db_result
         except Exception as e:
             logger.warning(f"DB load failed: {e}")
@@ -567,43 +796,40 @@ async def fetch_playlist(playlist_id: str, force_refresh: bool = False) -> dict:
         except Exception as e:
             logger.warning(f"DB evict failed (non-fatal): {e}")
 
+    task = _playlist_fetches.get(playlist_id)
+    if task is None:
+        task = asyncio.create_task(_fetch_playlist_from_spotify(playlist_id))
+        _playlist_fetches[playlist_id] = task
+        task.add_done_callback(lambda _t: _playlist_fetches.pop(playlist_id, None))
+    else:
+        logger.info(f"Joining in-flight fetch for {playlist_id}")
+    return await task
+
+async def _fetch_playlist_from_spotify(playlist_id: str) -> dict:
     logger.info(f"Fetching from Spotify: {playlist_id}")
     async with httpx.AsyncClient(follow_redirects=True, timeout=25.0) as http:
         token = await get_api_token(http)
 
         if not token:
-            # No-credentials path: use embed only.
-            # FIX: use tracks_for_db (all playable tracks, even those without a
-            # preview URL) when saving to the DB so the worker can find them.
-            # The user-facing result still only contains tracks with preview URLs.
+            # No-credentials path: use embed only. tracks_for_db carries all
+            # playable tracks (even without a preview URL) so the worker can
+            # find them; the user-facing result only has playable previews.
             result = await fetch_playlist_embed_only(http, playlist_id)
-            save_result = dict(result)
-            save_result["tracks"] = save_result.pop("tracks_for_db", save_result["tracks"])
-            try:
-                await save_playlist_to_db(playlist_id, save_result)
-            except Exception as e:
-                logger.warning(f"DB save failed: {e}")
-            result.pop("tracks_for_db", None)
-            memory_cache.set(playlist_id, result)
-            return result
+            tracks_for_db = result.pop("tracks_for_db", result["tracks"])
+            return await _finalize_and_save(playlist_id, result, tracks_for_db)
 
         playlist_name, playlist_image, all_meta, total_in_playlist = (
             await fetch_all_track_metadata(http, token, playlist_id)
         )
 
         if not all_meta:
-            # API metadata fetch failed; fall back to embed.
-            # Same FIX as above: save tracks_for_db so the worker can retry.
-            result = await fetch_playlist_embed_only(http, playlist_id)
-            save_result = dict(result)
-            save_result["tracks"] = save_result.pop("tracks_for_db", save_result["tracks"])
-            try:
-                await save_playlist_to_db(playlist_id, save_result)
-            except Exception as e:
-                logger.warning(f"DB save failed: {e}")
-            result.pop("tracks_for_db", None)
-            memory_cache.set(playlist_id, result)
-            return result
+            # API pages failed (e.g. 429 penalty); fall back to embed but keep
+            # the real total when the metadata request managed to report it.
+            result = await fetch_playlist_embed_only(
+                http, playlist_id, known_total=total_in_playlist
+            )
+            tracks_for_db = result.pop("tracks_for_db", result["tracks"])
+            return await _finalize_and_save(playlist_id, result, tracks_for_db)
 
         track_ids = [t["id"] for t in all_meta]
         meta_by_id = {t["id"]: t for t in all_meta}
@@ -700,18 +926,12 @@ async def fetch_playlist(playlist_id: str, force_refresh: bool = False) -> dict:
             "total_in_playlist": total_in_playlist,
             "skipped_no_preview": skipped,
             "pending_preview_retry": pending_retry,
+            # Partial page failures leave gaps a short cache TTL will re-fetch.
+            "fetch_complete": (len(tracks_for_db) + skipped) >= total_in_playlist,
             "source": "spotify",
         }
 
-        save_result = dict(result)
-        save_result["tracks"] = tracks_for_db
-        try:
-            await save_playlist_to_db(playlist_id, save_result)
-        except Exception as e:
-            logger.warning(f"DB save failed: {e}")
-
-        memory_cache.set(playlist_id, result)
-        return result
+        return await _finalize_and_save(playlist_id, result, tracks_for_db)
 
 ALLOWED_AUDIO_DOMAINS = {
     "p.scdn.co",
@@ -827,7 +1047,16 @@ async def get_playlist(
 
     pending = result.get("pending_preview_retry", 0)
     skipped = result.get("skipped_no_preview", 0)
-    if pending > 0 or skipped > 0:
+    if result.get("fetch_complete") is False:
+        # Degraded fetch (Spotify API rate-limit penalty): the visible track
+        # list may be truncated and the stated total may be a lower bound.
+        result["warning"] = (
+            f"Spotify is limiting our data access right now — loaded "
+            f"{result['total_tracks']} playable tracks so far. If your playlist "
+            f"is bigger, the rest will load automatically once access recovers "
+            f"(usually within a day)."
+        )
+    elif pending > 0 or skipped > 0:
         parts = []
         if pending > 0:
             parts.append(
@@ -898,7 +1127,8 @@ app.include_router(rooms_router)
 app.include_router(sessions_router)
 
 app.add_middleware(SecurityHeadersMiddleware)
-app.add_middleware(GZipMiddleware, minimum_size=1000)
+# gzip is handled by nginx (gzip_types includes application/json); doing it
+# here too just burns Python CPU and pointlessly compresses MP3 streams.
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
