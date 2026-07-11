@@ -21,6 +21,15 @@ async def init_db():
     )
     async with _pool.acquire() as conn:
         await conn.fetchval("SELECT 1")
+        # Lightweight self-migration (idempotent) so rolling deploys don't
+        # depend on someone remembering to re-run schema.sql.
+        try:
+            await conn.execute(
+                "ALTER TABLE playlists ADD COLUMN IF NOT EXISTS "
+                "fetch_complete BOOLEAN DEFAULT TRUE"
+            )
+        except Exception as e:
+            logger.warning(f"Self-migration skipped: {e}")
     logger.info("PostgreSQL connection pool created")
 
 async def close_db():

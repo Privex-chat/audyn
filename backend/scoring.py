@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, HTTPException, Depends, Request
@@ -33,6 +34,35 @@ DIFFICULTIES = {
         "min_score_pct": 0.25,
     },
 }
+
+# The pre-session score submission trusts the client's `correct` flag and
+# allows repeats. Once the frontend is on server-checked sessions
+# (/api/sessions/{id}/guess), flip this off in .env to close the cheat path.
+ALLOW_LEGACY_SCORE_SUBMIT = (
+    os.environ.get("ALLOW_LEGACY_SCORE_SUBMIT", "true").lower() != "false"
+)
+
+async def update_daily_streak(conn, user_id):
+    """Bump the user's daily streak once per day (consecutive-day logic)."""
+    today = datetime.now(timezone.utc).date()
+    yesterday = today - timedelta(days=1)
+    row = await conn.fetchrow(
+        "SELECT daily_streak, last_daily_date FROM users WHERE id = $1",
+        user_id,
+    )
+    if not row:
+        return
+    last_date = row["last_daily_date"]
+    current_streak = row["daily_streak"] or 0
+    if last_date != today:
+        new_streak = (current_streak + 1) if last_date == yesterday else 1
+        await conn.execute(
+            "UPDATE users SET daily_streak = $1, last_daily_date = $2 WHERE id = $3",
+            new_streak,
+            today,
+            user_id,
+        )
+        logger.info(f"Daily streak updated: user={user_id} streak={new_streak}")
 
 def compute_score(difficulty: str, clip_stage: int, elapsed_seconds: float) -> dict:
     cfg = DIFFICULTIES.get(difficulty, DIFFICULTIES["normal"])
@@ -94,6 +124,11 @@ async def submit_score(
     request: Request,
     user=Depends(require_user),
 ):
+    if not ALLOW_LEGACY_SCORE_SUBMIT:
+        raise HTTPException(
+            status_code=410,
+            detail="Direct score submission is disabled — update the app",
+        )
     if req.difficulty not in DIFFICULTIES:
         raise HTTPException(status_code=400, detail="Invalid difficulty")
     if req.game_mode not in ("classic", "ticking_away"):
@@ -248,24 +283,7 @@ async def submit_score(
 
         if req.is_daily:
             try:
-                today = datetime.now(timezone.utc).date()
-                yesterday = today - timedelta(days=1)
-                row = await conn.fetchrow(
-                    "SELECT daily_streak, last_daily_date FROM users WHERE id = $1",
-                    user["id"],
-                )
-                if row:
-                    last_date = row["last_daily_date"]
-                    current_streak = row["daily_streak"] or 0
-                    if last_date != today:
-                        new_streak = (current_streak + 1) if last_date == yesterday else 1
-                        await conn.execute(
-                            "UPDATE users SET daily_streak = $1, last_daily_date = $2 WHERE id = $3",
-                            new_streak,
-                            today,
-                            user["id"],
-                        )
-                        logger.info(f"Daily streak updated: user={user['id']} streak={new_streak}")
+                await update_daily_streak(conn, user["id"])
             except Exception as e:
                 logger.warning(f"Daily streak update failed: {e}")
 

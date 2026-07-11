@@ -210,7 +210,15 @@ async def run_retry_cycle():
 
 async def main():
     await init_db()
-    logger.info("Preview worker started")
+    logger.info("=" * 56)
+    logger.info("Audyn preview worker started")
+    logger.info(f"  batch size        : {PREVIEW_RETRY_BATCH} tracks")
+    logger.info(f"  per-track delay   : {PREVIEW_RETRY_DELAY}s")
+    logger.info(f"  batch pause       : {PREVIEW_RETRY_BATCH_PAUSE}s")
+    logger.info(f"  cycle pause       : {PREVIEW_RETRY_CYCLE_PAUSE}s")
+    logger.info(f"  cycle track limit : {PREVIEW_RETRY_CYCLE_LIMIT}")
+    logger.info(f"  max retries/track : {MAX_PREVIEW_RETRIES}")
+    logger.info("=" * 56)
     while True:
         try:
             await run_retry_cycle()

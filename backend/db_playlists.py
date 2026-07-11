@@ -19,9 +19,21 @@ async def load_playlist(playlist_id: str) -> dict | None:
         if not row:
             return None
 
+        record = dict(row)
+        is_complete = record.get("fetch_complete", True)
+        if is_complete is None:
+            is_complete = True
+
+        # Incomplete records (saved during a Spotify rate-limit penalty) get a
+        # short TTL so they're re-fetched the same day API access recovers,
+        # instead of serving a truncated track list for a week.
+        ttl = timedelta(days=PLAYLIST_TTL_DAYS) if is_complete else timedelta(hours=6)
         age = datetime.now(timezone.utc) - row["fetched_at"]
-        if age > timedelta(days=PLAYLIST_TTL_DAYS):
-            logger.info(f"Playlist {playlist_id} expired ({age.days} days old)")
+        if age > ttl:
+            logger.info(
+                f"Playlist {playlist_id} expired ({age} old, "
+                f"{'complete' if is_complete else 'incomplete'} record)"
+            )
             return None
 
         tracks = await conn.fetch("""
@@ -70,6 +82,7 @@ async def load_playlist(playlist_id: str) -> dict | None:
             "total_tracks": len(track_list),
             "total_in_playlist": row["total_in_playlist"],
             "skipped_no_preview": row["skipped_no_preview"],
+            "fetch_complete": bool(is_complete),
             "source": "database",
         }
 
@@ -103,18 +116,31 @@ async def save_playlist(playlist_id: str, result: dict):
     # heal (it only sees tracks reachable through playlist_tracks).
     total_stated = result.get("total_in_playlist", 0) or 0
     skipped = result.get("skipped_no_preview", 0) or 0
-    fetch_complete = total_stated > 0 and (len(tracks) + skipped) >= total_stated
+    # Fetchers that know their own completeness say so explicitly (the embed
+    # path detects its ~100-entry trackList cap; the API path detects failed
+    # pages). Fall back to the size check for callers that don't.
+    fetch_complete = result.get("fetch_complete")
+    if fetch_complete is None:
+        fetch_complete = total_stated > 0 and (len(tracks) + skipped) >= total_stated
+    fetch_complete = bool(fetch_complete)
 
     async with get_conn() as conn:
         async with conn.transaction():
+            # A degraded fetch must not shrink a previously known bigger total
+            # (GREATEST), and a record that was complete stays complete when a
+            # degraded fetch merely refreshes it (links are preserved below).
             await conn.execute("""
-                INSERT INTO playlists (playlist_id, name, image_url, total_in_playlist, skipped_no_preview, fetched_at)
-                VALUES ($1, $2, $3, $4, $5, NOW())
+                INSERT INTO playlists (playlist_id, name, image_url, total_in_playlist,
+                                       skipped_no_preview, fetch_complete, fetched_at)
+                VALUES ($1, $2, $3, $4, $5, $6, NOW())
                 ON CONFLICT (playlist_id) DO UPDATE SET
                     name               = $2,
                     image_url          = $3,
-                    total_in_playlist  = $4,
+                    total_in_playlist  = CASE WHEN $6 THEN $4
+                                              ELSE GREATEST(playlists.total_in_playlist, $4) END,
                     skipped_no_preview = $5,
+                    fetch_complete     = (COALESCE(playlists.fetch_complete, TRUE)
+                                          AND playlists.total_in_playlist >= $4) OR $6,
                     fetched_at         = NOW()
             """,
                 playlist_id,
@@ -122,6 +148,7 @@ async def save_playlist(playlist_id: str, result: dict):
                 result.get("image", ""),
                 total_stated,
                 skipped,
+                fetch_complete,
             )
 
             # Single batched upsert for all tracks. The CASE guards keep
