@@ -123,6 +123,7 @@ export default function GamePage({
         await ensureGuestSession();
         const startPayload = {
           playlist_id: playlistId || '',
+          track_ids: [],
           song_count: songCount,
           difficulty: difficultyKey || 'normal',
           game_mode: gameMode,
