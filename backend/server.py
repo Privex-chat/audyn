@@ -549,16 +549,20 @@ async def fetch_playlist_embed_only(http, playlist_id, known_total: int = 0):
     playlist_image = cover_sources[0]["url"] if cover_sources else ""
     track_list = entity.get("trackList", [])
 
-    EMBED_TRACKLIST_CAP = 100
+    # Spotify's embed response is capped near 100, but live responses have
+    # been observed at 98. Without an API-reported total, near-cap embed lists
+    # are a lower bound, not proof that the playlist is complete.
+    EMBED_TRACKLIST_TRUNCATION_FLOOR = 90
     authoritative_total = known_total or entity.get("trackCount", 0)
     if authoritative_total:
         total_stated = max(authoritative_total, len(track_list))
         embed_truncated = len(track_list) < total_stated
     else:
-        # No authoritative total anywhere. If the list hit the embed cap the
-        # playlist is almost certainly bigger than what we can see.
+        # No authoritative total anywhere. If the list is near the embed cap,
+        # treat it as incomplete so we don't fabricate "96 of 98" totals for
+        # large playlists during Spotify API penalties.
         total_stated = len(track_list)
-        embed_truncated = len(track_list) >= EMBED_TRACKLIST_CAP
+        embed_truncated = len(track_list) >= EMBED_TRACKLIST_TRUNCATION_FLOOR
 
     # FIX: build two separate lists so that all playable tracks (even those
     # without a preview URL) are persisted to the DB for the worker to retry,

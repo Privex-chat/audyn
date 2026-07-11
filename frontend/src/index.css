@@ -473,6 +473,37 @@ body {
   animation: screen-flash-red 0.15s ease-out forwards;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .noise-bg::before,
+  [data-theme="crt"] #root::before {
+    display: none;
+  }
+
+  [data-theme="crt"] .crt-flicker,
+  .screen-flash-green,
+  .screen-flash-red {
+    animation: none !important;
+  }
+
+  .screen-flash-green,
+  .screen-flash-red {
+    opacity: 0 !important;
+  }
+
+  .btn-tactile:active {
+    transform: none;
+  }
+}
+
 /* ═══════════════════════════════════════════════════════════════════
    SHADCN OVERRIDES (debug wrapper)
    ═══════════════════════════════════════════════════════════════════ */

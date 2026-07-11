@@ -1,7 +1,8 @@
 import { useRef, useCallback, useState, useEffect } from 'react';
 import { Howl } from 'howler';
+import { API_BASE } from '@/lib/api';
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'https://api.audyn.com';
+const BACKEND_URL = API_BASE;
 
 function proxyAudioUrl(originalUrl) {
   if (!originalUrl) return originalUrl;
