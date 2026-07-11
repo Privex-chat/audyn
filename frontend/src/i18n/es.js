@@ -52,6 +52,7 @@ const es = {
     challengeFriend: '⚔️ Desafiar a un amigo',
     changePlaylist: 'Cambiar playlist',
     playableTracks: '{count} pistas reproducibles',
+    loadingPreviews: 'Cargando fragmentos…',
     beatScore: '⚔️ ¡Supera la puntuación de {username} de {score}!',
     easy: 'Fácil',
     easyDesc: 'Clips más largos, más tiempo para pensar',

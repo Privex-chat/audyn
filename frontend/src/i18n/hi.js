@@ -52,6 +52,7 @@ const hi = {
     challengeFriend: '⚔️ दोस्त को चुनौती दें',
     changePlaylist: 'प्लेलिस्ट बदलें',
     playableTracks: '{count} बजाने योग्य ट्रैक',
+    loadingPreviews: 'प्रीव्यू लोड हो रहे हैं…',
     beatScore: '⚔️ {username} का स्कोर {score} को हराएं!',
     easy: 'आसान',
     easyDesc: 'लंबी क्लिप, सोचने का ज़्यादा समय',
