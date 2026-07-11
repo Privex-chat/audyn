@@ -14,6 +14,7 @@ import { DIFFICULTY_MODES, DEFAULT_DIFFICULTY, GAME_MODES, DEFAULT_GAME_MODE, GU
 import { useAuth } from '@/context/AuthContext';
 import { useLanguage } from '@/context/LanguageContext';
 import { getFeaturedPlaylists } from '@/lib/featuredPlaylists';
+import { getApiError } from '@/lib/utils';
 
 const DEMO_PLAYLIST = '37i9dQZF1DXcBWIGoYBM5M';
 const RECENT_KEY = 'audyn_recent_playlists';
@@ -161,8 +162,7 @@ export default function HomePage({
       if (resp.data.warning) toast.warning(resp.data.warning);
       setTimeout(() => setPlaylistLoaded(true), 100);
     } catch (err) {
-      const msg = err.response?.data?.detail || 'Failed to load playlist';
-      toast.error(msg);
+      toast.error(getApiError(err, 'Failed to load playlist'));
     } finally {
       setLoading(false);
     }

@@ -3,6 +3,7 @@ import { Loader2, ArrowLeft, LogIn } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/context/AuthContext';
 import { useLanguage } from '@/context/LanguageContext';
+import { getApiError } from '@/lib/utils';
 
 export default function LoginPage({ onBack, onSwitchToRegister }) {
   const { login } = useAuth();
@@ -23,8 +24,7 @@ export default function LoginPage({ onBack, onSwitchToRegister }) {
       toast.success(t('login.welcomeBack'));
       onBack();
     } catch (err) {
-      const msg = err.response?.data?.detail || t('login.loginFailed');
-      toast.error(msg);
+      toast.error(getApiError(err, t('login.loginFailed')));
     } finally {
       setLoading(false);
     }

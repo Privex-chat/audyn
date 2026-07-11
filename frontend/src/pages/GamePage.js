@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Loader2, ArrowLeft } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/lib/api';
+import { getApiError } from '@/lib/utils';
 import { useAudio } from '@/hooks/useAudio';
 import { DIFFICULTY_MODES, DEFAULT_DIFFICULTY } from '@/lib/difficulty';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
@@ -134,7 +135,7 @@ export default function GamePage({
         setSessionReady(true);
       } catch (err) {
         console.error('Session start failed:', err);
-        toast.error(err?.response?.data?.detail || t('game.audioError'));
+        toast.error(getApiError(err, t('game.audioError')));
         onBack();
       }
     })();

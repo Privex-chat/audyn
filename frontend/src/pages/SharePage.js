@@ -4,6 +4,7 @@ import api from '@/lib/api';
 import { DIFFICULTY_MODES, DEFAULT_DIFFICULTY } from '@/lib/difficulty';
 import { ResultCard, classifyResult, buildEmojiGrid } from '@/pages/EndPage';
 import { useLanguage } from '@/context/LanguageContext';
+import { getApiError } from '@/lib/utils';
 
 function MissedTracksSection({ trackResults }) {
   const [open, setOpen] = useState(false);
@@ -122,7 +123,7 @@ export default function SharePage({ shareId, onNavigate }) {
         setMetaTag('twitter:title', `Audyn — ${d.score}/${d.max_score}`);
         setMetaTag('twitter:description', `Can you beat ${d.username}? Try "${d.playlist_name}" on Audyn.`);
       })
-      .catch((err) => { setError(err.response?.data?.detail || t('share.shareExpired')); })
+      .catch((err) => { setError(getApiError(err, t('share.shareExpired'))); })
       .finally(() => setLoading(false));
   }, [shareId, t]);
 
