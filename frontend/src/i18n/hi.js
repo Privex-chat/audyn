@@ -53,6 +53,12 @@ const hi = {
     changePlaylist: 'प्लेलिस्ट बदलें',
     playableTracks: '{count} बजाने योग्य ट्रैक',
     beatScore: '⚔️ {username} का स्कोर {score} को हराएं!',
+
+    announcement: {
+      title: '🎉 अब बड़ी प्लेलिस्ट सपोर्ट करती है!',
+      message: '100+ गानों वाली प्लेलिस्ट अब सपोर्टेड हैं। लोड होने में थोड़ा समय लग सकता है।',
+    },
+
     easy: 'आसान',
     easyDesc: 'लंबी क्लिप, सोचने का ज़्यादा समय',
     normal: 'सामान्य',

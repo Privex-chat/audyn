@@ -7,7 +7,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Loader2, Music, Play, Zap, Users, ChevronRight } from 'lucide-react';
+import { Loader2, Music, Play, Zap, Users, ChevronRight, X } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/lib/api';
 import { DIFFICULTY_MODES, DEFAULT_DIFFICULTY, GAME_MODES, DEFAULT_GAME_MODE, GUESS_MODES, DEFAULT_GUESS_MODE } from '@/lib/difficulty';
@@ -42,6 +42,7 @@ export default function HomePage({
   const [playersToday, setPlayersToday] = useState(null);
   const [challengeBanner, setChallengeBanner] = useState(null);
   const [featuredData, setFeaturedData] = useState([]);
+  const [showAnnouncement, setShowAnnouncement] = useState(() => !localStorage.getItem('audyn_announcement_dismissed'));
 
   useEffect(() => {
     const fetchPlayers = () =>
@@ -252,6 +253,43 @@ export default function HomePage({
             <p className="font-body text-[11px] mt-1" style={{ color: 'var(--color-text-secondary)' }}>
               {challengeBanner.playlistName}
             </p>
+          </div>
+        )}
+
+        {showAnnouncement && (
+          <div
+            className="p-3 rounded-sm text-center animate-slide-in-down flex items-center justify-between gap-2"
+            style={{
+              backgroundColor: 'var(--color-neon-subtle)',
+              border: '1px solid var(--color-neon-dim)',
+            }}
+          >
+            <div className="flex items-center gap-2 text-left flex-1">
+              <span className="font-mono text-xs font-bold" style={{ color: 'var(--color-neon)' }}>
+                {t('home.announcement.title')}
+              </span>
+              <p className="font-body text-[11px]" style={{ color: 'var(--color-text-secondary)' }}>
+                {t('home.announcement.message')}
+              </p>
+            </div>
+            <button
+              onClick={() => {
+                setShowAnnouncement(false);
+                localStorage.setItem('audyn_announcement_dismissed', 'true');
+              }}
+              className="flex-shrink-0 p-1 rounded transition-colors btn-tactile"
+              style={{
+                color: 'var(--color-text-muted)',
+                backgroundColor: 'transparent',
+                border: 'none',
+              }}
+              aria-label="Dismiss announcement"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
           </div>
         )}
 

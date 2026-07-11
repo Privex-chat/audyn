@@ -53,6 +53,12 @@ const es = {
     changePlaylist: 'Cambiar playlist',
     playableTracks: '{count} pistas reproducibles',
     beatScore: '⚔️ ¡Supera la puntuación de {username} de {score}!',
+
+    announcement: {
+      title: '🎉 ¡Ahora compatible con playlists grandes!',
+      message: 'Las playlists con 100+ canciones ahora son compatibles. Pueden tardar un poco en cargar.',
+    },
+
     easy: 'Fácil',
     easyDesc: 'Clips más largos, más tiempo para pensar',
     normal: 'Normal',

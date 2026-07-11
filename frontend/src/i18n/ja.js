@@ -53,6 +53,12 @@ const ja = {
     changePlaylist: 'プレイリストを変更',
     playableTracks: '再生可能: {count}トラック',
     beatScore: '⚔️ {username}のスコア{score}を超えよう！',
+
+    announcement: {
+      title: '🎉 大規模プレイリストに対応しました！',
+      message: '100曲以上のプレイリストがサポートされました。読み込みに少し時間がかかる場合があります。',
+    },
+
     easy: 'イージー',
     easyDesc: '長いクリップ、考える時間が多い',
     normal: 'ノーマル',

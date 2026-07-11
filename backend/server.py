@@ -35,6 +35,7 @@ from preview_store import (
     mark_recovered,
     mark_failed,
     mark_unavailable,
+    MAX_PREVIEW_RETRIES,
 )
 from auth import auth_router, get_current_user, require_user
 from scoring import score_router

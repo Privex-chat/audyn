@@ -276,7 +276,9 @@ export default function EndPage({ results, playlistData, onReplay, onNewPlaylist
       const safePlaylist = (playlistName || 'audyn').replace(/[^a-z0-9]/gi, '-').toLowerCase();
       link.download = `audyn-${safePlaylist}.png`;
       link.href = canvas.toDataURL('image/png');
+      document.body.appendChild(link);
       link.click();
+      document.body.removeChild(link);
       toast.success('Card saved!');
     } catch (err) {
       console.error('Save card failed:', err);

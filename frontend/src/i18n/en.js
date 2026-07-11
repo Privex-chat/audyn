@@ -56,6 +56,11 @@ const en = {
 
     beatScore: '⚔️ Beat {username}\'s score of {score}!',
 
+    announcement: {
+      title: '🎉 Now supporting large playlists!',
+      message: 'Playlists with 100+ songs are now supported. They may take a short while to load.',
+    },
+
     easy: 'Easy',
     easyDesc: 'Longer clips, more time to think',
     normal: 'Normal',

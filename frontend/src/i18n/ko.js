@@ -52,8 +52,14 @@ const ko = {
       challengeFriend: '⚔️ 친구에게 도전',
       changePlaylist: '플레이리스트 변경',
       playableTracks: '재생 가능 트랙 {count}개',
-      beatScore: '⚔️ {username}의 점수 {score}를 이겨보세요!',
-      easy: '쉬움',
+beatScore: '⚔️ {username}의 점수 {score}를 이겨보세요!',
+
+    announcement: {
+      title: '🎉 이제 대용량 플레이리스트를 지원합니다!',
+      message: '100곡 이상의 플레이리스트를 이제 지원합니다. 로드하는 데 잠시 시간이 걸릴 수 있습니다.',
+    },
+
+    easy: '쉬움',
       easyDesc: '긴 클립, 생각할 시간이 충분',
       normal: '보통',
       normalDesc: '기본 경험',
