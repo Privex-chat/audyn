@@ -40,6 +40,11 @@ describe('splitArtists', () => {
     expect(splitArtists('Calvin Harris feat. Dua Lipa')).toEqual(['calvin harris', 'dua lipa']);
     expect(splitArtists('Jack Ü & Justin Bieber')).toEqual(['jack u', 'justin bieber']);
   });
+  test('alphabetic separator tokens do not match mid-name', () => {
+    expect(splitArtists('Daft Punk')).toEqual(['daft punk']);
+    expect(splitArtists('Bill Withers')).toEqual(['bill withers']);
+    expect(splitArtists('Xscape')).toEqual(['xscape']);
+  });
 });
 
 describe('matchesArtist (correctness — any credited artist, accent-forgiving, not lenient)', () => {
