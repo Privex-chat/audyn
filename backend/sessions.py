@@ -48,8 +48,8 @@ def _entry_by_position(tracks_data: dict, position: int):
 
 class StartSessionRequest(BaseModel):
     playlist_id: str = ""
-    # Legacy clients send an explicit track list; new clients omit it and the
-    # server selects (and keeps secret) the round order.
+    # Legacy clients send a non-empty explicit track list; new clients send
+    # [] or omit it, and the server selects (and keeps secret) the round order.
     track_ids: list[str] | None = None
     song_count: int = 10
     difficulty: str = "normal"
@@ -121,10 +121,8 @@ async def start_session(req: StartSessionRequest, user=Depends(require_user)):
             ordered = [by_id[tid] for tid in daily_ids if tid in by_id]
             if not req.playlist_id:
                 req.playlist_id = challenge.get("playlist_id") or ""
-        elif req.track_ids is not None:
+        elif req.track_ids:
             # Legacy path: client-chosen tracks/order (old app versions).
-            if not req.track_ids:
-                raise HTTPException(status_code=400, detail="No tracks provided")
             if len(req.track_ids) > MAX_SESSION_TRACKS:
                 raise HTTPException(status_code=400, detail="Too many tracks (max 100)")
             rows = await conn.fetch(
