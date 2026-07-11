@@ -33,8 +33,14 @@ CREATE TABLE IF NOT EXISTS playlists (
     image_url           TEXT DEFAULT '',
     total_in_playlist   INT DEFAULT 0,
     skipped_no_preview  INT DEFAULT 0,
+    -- FALSE when the last effective fetch was degraded (Spotify API penalty /
+    -- truncated embed list): such records get a short cache TTL.
+    fetch_complete      BOOLEAN DEFAULT TRUE,
     fetched_at          TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Idempotent migration for pre-existing databases
+ALTER TABLE playlists ADD COLUMN IF NOT EXISTS fetch_complete BOOLEAN DEFAULT TRUE;
 
 -- ─── Tracks (Spotify cache) ─────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS tracks (
