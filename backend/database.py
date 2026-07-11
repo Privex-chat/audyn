@@ -28,6 +28,23 @@ async def init_db():
                 "ALTER TABLE playlists ADD COLUMN IF NOT EXISTS "
                 "fetch_complete BOOLEAN DEFAULT TRUE"
             )
+            await conn.execute(
+                "ALTER TABLE playlists ALTER COLUMN fetch_complete SET DEFAULT FALSE"
+            )
+            repaired = await conn.execute(
+                """
+                UPDATE playlists
+                SET fetch_complete = FALSE,
+                    fetched_at = LEAST(
+                        fetched_at,
+                        NOW() - INTERVAL '6 hours' - INTERVAL '1 second'
+                    )
+                WHERE fetch_complete = TRUE
+                  AND total_in_playlist BETWEEN 90 AND 100
+                  AND fetched_at >= NOW() - INTERVAL '14 days'
+                """
+            )
+            logger.info(f"Playlist cache repair complete: {repaired}")
         except Exception as e:
             logger.warning(f"Self-migration skipped: {e}")
     logger.info("PostgreSQL connection pool created")
