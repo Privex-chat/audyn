@@ -84,3 +84,4 @@ android-sdk/ -e
 *.env
 ecosystem.config.js
 *.bak
+/frontend/build
