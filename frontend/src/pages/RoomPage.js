@@ -1,14 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { ArrowLeft, Copy, Loader2, Share2, Download } from 'lucide-react';
-
-function shuffleArray(arr) {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
 import { toast } from 'sonner';
 import api from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
@@ -487,7 +478,9 @@ export default function RoomPage({ roomData, onNavigate, onBack }) {
 
           const res = await api.post('/rooms/create', payload);
           setRoomCode(res.data.room_code);
-          setTracks(shuffleArray(res.data.tracks || []));
+          // Pool is autocomplete-only; the play order is server-side in the
+          // room's seeded track_ids, applied by /sessions/start for both players.
+          setTracks(res.data.tracks || []);
           setSettings(roomData.settings || {});
           setIsHost(true);
           setSubState('lobby');
@@ -496,7 +489,7 @@ export default function RoomPage({ roomData, onNavigate, onBack }) {
         } else if (roomData.mode === 'join' && roomData.code) {
           const res = await api.post(`/rooms/join/${roomData.code}`);
           setRoomCode(res.data.room_code);
-          setTracks(shuffleArray(res.data.tracks || []));
+          setTracks(res.data.tracks || []);
           setSettings({
             songCount:  res.data.song_count,
             difficulty: res.data.difficulty,

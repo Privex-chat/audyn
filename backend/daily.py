@@ -147,7 +147,13 @@ async def get_daily_challenge(user=Depends(get_current_user)):
         return d
 
     tracks_by_id = {r["track_id"]: map_track(r) for r in rows}
-    ordered_tracks = [tracks_by_id[tid] for tid in track_ids if tid in tracks_by_id]
+    # Name-sorted pool: everyone gets the same list for autocomplete, but the
+    # response order no longer reveals the play order (which /sessions/start
+    # applies server-side from the challenge's track_ids).
+    ordered_tracks = sorted(
+        (tracks_by_id[tid] for tid in track_ids if tid in tracks_by_id),
+        key=lambda t: t["name"].lower(),
+    )
 
     already_played = False
     user_streak = 0
