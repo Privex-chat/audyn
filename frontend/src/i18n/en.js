@@ -79,6 +79,7 @@ const en = {
     tapToUnlock: 'Tap anywhere to unlock audio',
     listening: 'LISTENING...',
     ready: 'READY',
+    tapReplay: 'Tap to replay',
     loadingAudio: 'LOADING...',
     skipped: 'SKIPPED',
     audioError: 'AUDIO ERROR',

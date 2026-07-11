@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Loader2, ArrowLeft } from 'lucide-react';
+import { Loader2, ArrowLeft, RotateCcw } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/lib/api';
 import { useAudio } from '@/hooks/useAudio';
@@ -876,6 +876,12 @@ export default function GamePage({
                   />
                 </svg>
               )}
+              {phase === 'playing' && isLoaded && !isPlaying && (
+                <span
+                  className="absolute inset-0 rounded-full animate-ping pointer-events-none"
+                  style={{ border: '2px solid var(--color-neon)', opacity: 0.35 }}
+                />
+              )}
               <button
                 onClick={handlePlayToggle}
                 className="relative w-16 h-16 rounded-full flex items-center justify-center btn-tactile transition-all"
@@ -899,6 +905,17 @@ export default function GamePage({
                 )}
               </button>
             </div>
+
+            {}
+            {phase === 'playing' && isLoaded && !isPlaying && (
+              <p
+                className="font-mono text-[10px] flex items-center gap-1.5 -mt-2"
+                style={{ color: 'var(--color-text-muted)' }}
+              >
+                <RotateCcw className="h-3 w-3" />
+                {t('game.tapReplay')}
+              </p>
+            )}
 
             {}
             <div className="w-full relative">
@@ -928,10 +945,15 @@ export default function GamePage({
               {}
               {showDropdown && filteredItems.length > 0 && (
                 <div
-                  className="absolute top-full left-0 right-0 mt-1 z-50 max-h-56 overflow-y-auto rounded-sm"
+                  className={`absolute left-0 right-0 z-50 max-h-56 overflow-y-auto rounded-sm ${
+                    isTouchDevice.current ? 'bottom-full mb-1' : 'top-full mt-1'
+                  }`}
                   style={{
                     backgroundColor: 'var(--color-surface)',
                     border: '1px solid var(--color-border)',
+                    boxShadow: isTouchDevice.current
+                      ? '0 -4px 16px rgba(0,0,0,0.4)'
+                      : '0 4px 16px rgba(0,0,0,0.4)',
                   }}
                 >
                   {guessMode === 'artist' ? (
@@ -1010,8 +1032,12 @@ export default function GamePage({
             <button
               onClick={handleSkip}
               disabled={phase !== 'playing'}
-              className="font-mono text-[11px] uppercase tracking-wider px-4 py-2 btn-tactile transition-colors"
-              style={{ color: 'var(--color-text-dim)' }}
+              className="w-full flex items-center justify-center gap-2 py-2.5 rounded-sm font-mono text-xs uppercase tracking-wider btn-tactile transition-colors"
+              style={{
+                border: '1px solid var(--color-border)',
+                color: 'var(--color-text-secondary)',
+                opacity: phase !== 'playing' ? 0.4 : 1,
+              }}
             >
               {t('game.skip')} →
             </button>
