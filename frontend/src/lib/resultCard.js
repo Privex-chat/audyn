@@ -37,7 +37,7 @@ const DPR = 2;
 
 // Draw the card into `canvas`, sizing it to fit the content. Resolves when the
 // (optional) playlist image has loaded and everything is painted.
-export async function drawResultCard(canvas, opts) {
+export async function drawResultCard(canvas, opts, isCancelled) {
   const {
     score = 0, maxScore = 0, correctGuesses = 0, totalTracks = 0, percentage = 0,
     playlistName = '', playlistImage = '',
@@ -48,6 +48,7 @@ export async function drawResultCard(canvas, opts) {
   } = opts;
 
   const playlistImg = await loadImage(playlistImage);
+  if (isCancelled && isCancelled()) return null; // deps changed / unmounted while the image loaded
   const usable = W - PAD * 2;
   const emojis = emojiGrid ? [...emojiGrid] : [];
 
@@ -58,14 +59,13 @@ export async function drawResultCard(canvas, opts) {
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   ctx.font = '18px sans-serif';
   const EMOJI_SP = 2;
-  let emojiLines = 0;
+  const lines = emojis.length ? [[]] : [];
   if (emojis.length) {
     let lineW = 0;
-    emojiLines = 1;
     for (const e of emojis) {
       const ew = ctx.measureText(e).width + EMOJI_SP;
-      if (lineW + ew > usable && lineW > 0) { emojiLines++; lineW = ew; }
-      else { lineW += ew; }
+      if (lineW + ew > usable && lineW > 0) { lines.push([e]); lineW = ew; }
+      else { lines[lines.length - 1].push(e); lineW += ew; }
     }
   }
 
@@ -74,7 +74,7 @@ export async function drawResultCard(canvas, opts) {
   const headerH = 24;
   const scoreH = 118;         // 80px number + "out of" + gaps
   const pillsH = 56;
-  const emojiH = emojis.length ? emojiLines * 26 + 20 : 0;
+  const emojiH = emojis.length ? lines.length * 26 + 20 : 0;
   const footerH = 74;
   const H = yStart + headerH + scoreH + pillsH + emojiH + footerH + PAD;
 
@@ -196,14 +196,6 @@ export async function drawResultCard(canvas, opts) {
   if (emojis.length) {
     ctx.font = '18px sans-serif';
     ctx.textAlign = 'left';
-    // group into lines
-    const lines = [[]];
-    let lineW = 0;
-    for (const e of emojis) {
-      const ew = ctx.measureText(e).width + EMOJI_SP;
-      if (lineW + ew > usable && lineW > 0) { lines.push([e]); lineW = ew; }
-      else { lines[lines.length - 1].push(e); lineW += ew; }
-    }
     let ey = y + 18;
     for (const line of lines) {
       const w = line.reduce((a, e) => a + ctx.measureText(e).width + EMOJI_SP, 0) - EMOJI_SP;
