@@ -123,6 +123,7 @@ export default function GamePage({
         await ensureGuestSession();
         const res = await api.post('/sessions/start', {
           playlist_id: playlistId || '',
+          track_ids: null,
           song_count: songCount,
           difficulty: difficultyKey || 'normal',
           game_mode: gameMode,
