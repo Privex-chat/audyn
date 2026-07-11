@@ -3,6 +3,7 @@ import { ArrowLeft, Loader2, ExternalLink, Award, Play, Copy } from 'lucide-reac
 import { toast } from 'sonner';
 import api from '@/lib/api';
 import { useLanguage } from '@/context/LanguageContext';
+import { getApiError } from '@/lib/utils';
 
 const WEBAPP_URL = process.env.REACT_APP_WEBAPP_URL || window.location.origin;
 const DISPLAY_HOST = new URL(WEBAPP_URL).host;
@@ -34,7 +35,7 @@ export default function PublicProfilePage({ username, onBack, onNavigate }) {
         );
       })
       .catch((err) => {
-        setError(err.response?.data?.detail || 'User not found');
+        setError(getApiError(err, 'User not found'));
       })
       .finally(() => setLoading(false));
   }, [username]);

@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import api from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import { useLanguage } from '@/context/LanguageContext';
+import { getApiError } from '@/lib/utils';
 
 export default function DailyChallengePage({ onBack, onStartDaily }) {
   const { user, isAuthenticated, isGuest } = useAuth();
@@ -16,7 +17,7 @@ export default function DailyChallengePage({ onBack, onStartDaily }) {
   useEffect(() => {
     api.get('/daily/today')
       .then((res) => { setChallenge(res.data); setUserStreak(res.data.user_streak || 0); })
-      .catch((err) => { setError(err.response?.data?.detail || t('daily.couldNotLoad')); })
+      .catch((err) => { setError(getApiError(err, t('daily.couldNotLoad'))); })
       .finally(() => setLoading(false));
   }, [t]);
 

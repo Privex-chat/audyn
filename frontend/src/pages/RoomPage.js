@@ -2,18 +2,10 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { ArrowLeft, Copy, Loader2, Share2, Download } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/lib/api';
+import { getApiError } from '@/lib/utils';
 import { useAuth } from '@/context/AuthContext';
 import { useLanguage } from '@/context/LanguageContext';
 import GamePage from '@/pages/GamePage';
-
-function getApiError(err, fallback = 'Something went wrong') {
-  const detail = err?.response?.data?.detail;
-  if (!detail) return fallback;
-  if (typeof detail === 'string') return detail;
-  if (Array.isArray(detail))
-    return detail.map((e) => (Array.isArray(e.loc) ? `${e.loc.slice(-1)[0]}: ${e.msg}` : e.msg)).join(', ');
-  return fallback;
-}
 
 function resolvePlaylistId(playlistData) {
   if (!playlistData) return null;

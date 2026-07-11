@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { ArrowLeft, Camera, Loader2, ExternalLink, LogOut, Award } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/lib/api';
+import { getApiError } from '@/lib/utils';
 import { useAuth } from '@/context/AuthContext';
 import { useLanguage } from '@/context/LanguageContext';
 import { LineChart, Line, ResponsiveContainer, Tooltip } from 'recharts';
@@ -114,7 +115,7 @@ export default function ProfilePage({ onBack, onNavigate }) {
       setEditing(false);
       toast.success(t('profile.profileUpdated'));
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Failed to update');
+      toast.error(getApiError(err, 'Failed to update'));
     } finally {
       setSaving(false);
     }
@@ -137,7 +138,7 @@ export default function ProfilePage({ onBack, onNavigate }) {
       await refreshProfile();
       toast.success(t('profile.avatarUpdated'));
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Upload failed');
+      toast.error(getApiError(err, 'Upload failed'));
     } finally {
       setUploading(false);
     }
