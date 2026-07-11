@@ -35,7 +35,9 @@ export function matchesQuery(normHaystack, normQuery) {
 }
 
 // Separators Spotify (and people) use between collaborating artists.
-const ARTIST_SEP = /\s*(?:,|&|\/|\+|feat\.?|ft\.?|featuring|with|x|×)\s*/gi;
+// Word-bounded on the alphabetic tokens so they don't match mid-name, e.g.
+// "x" in "Xscape", "ft" in "Daft Punk", "with" in "Bill Withers".
+const ARTIST_SEP = /\s*(?:,|&|\/|\+|×|\bfeat\.?\b|\bft\.?\b|\bfeaturing\b|\bwith\b|\bx\b)\s*/gi;
 
 // Split a raw artist field into individual normalized artist names.
 // "Drake, 21 Savage" → ["drake", "21 savage"]; "A feat. B" → ["a", "b"].
