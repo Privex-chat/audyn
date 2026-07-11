@@ -275,11 +275,10 @@ export default function HomePage({
     { key: 'artist', label: t('home.artist'), desc: t('home.artistDesc'), icon: '🎤' },
   ];
 
-  return (
+return (
     <div className="min-h-[calc(100vh-48px)] flex flex-col items-center px-4 py-6">
       <div className="w-full max-w-md space-y-6">
 
-        {}
         {!playlistInfo && (
           <div className="text-center pt-6 pb-2 space-y-3 animate-slide-in-down">
             <h2
@@ -302,8 +301,7 @@ export default function HomePage({
           </div>
         )}
 
-        {}
-        {challengeBanner && (
+{challengeBanner && (
           <div
             className="p-3 rounded-sm text-center animate-slide-in-down"
             style={{
@@ -320,7 +318,7 @@ export default function HomePage({
           </div>
         )}
 
-        {showAnnouncement && (
+        {!playlistInfo && showAnnouncement && (
           <div
             className="px-3 py-2 rounded-sm animate-slide-in-down flex items-center justify-between gap-2"
             style={{
