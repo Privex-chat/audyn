@@ -3,16 +3,27 @@ import { Loader2, ArrowLeft } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/lib/api';
 import { useAudio } from '@/hooks/useAudio';
-import { DIFFICULTY_MODES, DEFAULT_DIFFICULTY, calculateTimePressureScore } from '@/lib/difficulty';
+import { DIFFICULTY_MODES, DEFAULT_DIFFICULTY } from '@/lib/difficulty';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useAuth } from '@/context/AuthContext';
 import { useLanguage } from '@/context/LanguageContext';
+
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'https://api.audyn.xyz';
 
 function getStreakMultiplier(count) {
   if (count >= 7) return 2.0;
   if (count >= 5) return 1.5;
   if (count >= 3) return 1.2;
   return 1.0;
+}
+
+function shuffleArray(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
 }
 
 export default function GamePage({
@@ -35,10 +46,13 @@ export default function GamePage({
   const CLIP_DURATIONS = difficulty.clipDurations;
   const CLIP_POINTS = difficulty.clipPoints;
 
-  const { user, ensureGuestSession } = useAuth();
+  const { ensureGuestSession } = useAuth();
   const { t } = useLanguage();
 
-  const [gameTracks, setGameTracks] = useState([]);
+  // Rounds are server-authoritative: the server picks (and keeps secret) the
+  // track order; the client only learns each track at reveal time.
+  const [totalRounds, setTotalRounds] = useState(0);
+  const [sessionReady, setSessionReady] = useState(false);
   const [albumArtMap, setAlbumArtMap] = useState({});
   const [currentIndex, setCurrentIndex] = useState(0);
   const [clipStage, setClipStage] = useState(0);
@@ -52,10 +66,10 @@ export default function GamePage({
   const [stageHistory, setStageHistory] = useState([]);
   const [shaking, setShaking] = useState(false);
   const [revealResult, setRevealResult] = useState(null);
+  const [revealInfo, setRevealInfo] = useState(null); // server reveal: {id, name, artist, album_image}
   const [scoreBump, setScoreBump] = useState(false);
   const [screenFlash, setScreenFlash] = useState(null);
   const [elapsed, setElapsed] = useState(0);
-  const [clipStartTime, setClipStartTime] = useState(null);
 
   const isTouchDevice = useRef('ontouchstart' in window || navigator.maxTouchPoints > 0);
   const [needsAudioUnlock, setNeedsAudioUnlock] = useState(isTouchDevice.current);
@@ -76,10 +90,9 @@ export default function GamePage({
   const shuffledAllTracksRef = useRef(null);
   const searchIndexRef = useRef(null);
   const debounceRef = useRef(null);
-  const pendingScoresRef = useRef([]);
-  const sessionIdRef = useRef(null); // FIX-03: server-side session id
-
-  const clipStartTimeRef = useRef(null);
+  const sessionIdRef = useRef(null);
+  const sessionStartedRef = useRef(false); // guard: start exactly once
+  const guessBusyRef = useRef(false);      // guard: one in-flight guess at a time
 
   useEffect(() => {
     const map = {};
@@ -90,49 +103,49 @@ export default function GamePage({
   }, [tracks]);
 
   useEffect(() => {
-    const selected = isDaily
-      ? tracks.slice(0, songCount)
-      : [...tracks].sort(() => Math.random() - 0.5).slice(0, songCount);
-    setGameTracks(selected);
-
+    // Autocomplete pool: shuffled once so dropdown order gives nothing away.
     if (!shuffledAllTracksRef.current) {
-      shuffledAllTracksRef.current = [...tracks].sort(() => Math.random() - 0.5);
+      shuffledAllTracksRef.current = shuffleArray(tracks);
       searchIndexRef.current = shuffledAllTracksRef.current.map(t => ({
         nameLower: t.name.toLowerCase(),
         artistLower: t.artist.toLowerCase(),
       }));
     }
 
+    // Start the server session exactly once. The ref guard (not effect deps)
+    // ensures creating a guest session mid-flight can't restart the game.
+    if (sessionStartedRef.current) return;
+    sessionStartedRef.current = true;
+
     (async () => {
       try {
         await ensureGuestSession();
-        const trackIds = selected.map(t => t.id || t.track_id).filter(Boolean);
         const res = await api.post('/sessions/start', {
           playlist_id: playlistId || '',
-          track_ids: trackIds,
+          song_count: songCount,
           difficulty: difficultyKey || 'normal',
           game_mode: gameMode,
           guess_mode: guessMode,
           is_daily: isDaily,
           room_code: roomCode || null,
         });
-        sessionIdRef.current = res.data.session_id || null;
+        sessionIdRef.current = res.data.session_id;
+        setTotalRounds(res.data.total_rounds);
+        setSessionReady(true);
       } catch (err) {
         console.error('Session start failed:', err);
-
-        sessionIdRef.current = null;
+        toast.error(err?.response?.data?.detail || t('game.audioError'));
+        onBack();
       }
     })();
-  }, [tracks, songCount, isDaily, ensureGuestSession, playlistId, difficultyKey, gameMode, guessMode, roomCode]);
 
-  useEffect(() => {
-    if (gameTracks.length > 0 && phase === 'loading' && results.length === 0 && !needsAudioUnlock) {
-      initRound(gameTracks[0]);
-    }
+  }, []); // eslint-disable-line
 
-  }, [gameTracks, needsAudioUnlock]);
+  const clipUrl = useCallback((roundNo) => (
+    `${BACKEND_URL}/api/sessions/${sessionIdRef.current}/clip/${roundNo}`
+  ), []);
 
-  const initRound = useCallback((track) => {
+  const initRound = useCallback((roundNo) => {
     setPhase('loading');
     setClipStage(0);
     setStageHistory([]);
@@ -141,9 +154,8 @@ export default function GamePage({
     if (inputRef.current) inputRef.current.value = '';
     clearTimeout(debounceRef.current);
     setRevealResult(null);
+    setRevealInfo(null);
     setElapsed(0);
-    setClipStartTime(null);
-    clipStartTimeRef.current = null;  // Fix: keep ref in sync
     elapsedRef.current = 0;
     if (timerRef.current) clearInterval(timerRef.current);
 
@@ -153,8 +165,15 @@ export default function GamePage({
     setStartPos(randomStart);
     startPosRef.current = randomStart;
     needsPlayRef.current = true;
-    loadAudio(track.preview_url);
-  }, [loadAudio, CLIP_DURATIONS]);
+    loadAudio(clipUrl(roundNo));
+  }, [loadAudio, CLIP_DURATIONS, clipUrl]);
+
+  useEffect(() => {
+    if (sessionReady && phase === 'loading' && results.length === 0 && !needsAudioUnlock) {
+      initRound(0);
+    }
+
+  }, [sessionReady, needsAudioUnlock]); // eslint-disable-line
 
   useEffect(() => {
     if (isLoaded && needsPlayRef.current) {
@@ -168,10 +187,10 @@ export default function GamePage({
   useEffect(() => {
     if (loadError && phase === 'loading') {
       toast.error(t('game.audioError'));
-      revealTrack(false, 0, [{ type: 'skip', text: 'AUDIO ERROR' }]);
+      resolveRoundAsFailed([{ type: 'skip', text: 'AUDIO ERROR' }]);
     }
 
-  }, [loadError]);
+  }, [loadError]); // eslint-disable-line
 
   useKeyboardShortcuts({
     onPlay: () => handlePlayToggle(),
@@ -214,8 +233,6 @@ export default function GamePage({
 
   const startTimer = () => {
     const start = Date.now();
-    clipStartTimeRef.current = start;  // Fix: write ref first so submitScore always has a current value
-    setClipStartTime(start);
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = setInterval(() => {
       const e = (Date.now() - start) / 1000;
@@ -241,106 +258,124 @@ export default function GamePage({
     setTimeout(() => setScreenFlash(null), type === 'red' ? 150 : 300);
   };
 
-  const handleSkip = () => {
-    if (phase !== 'playing') return;
+  const postGuess = async (payload) => {
+    return api.post(`/sessions/${sessionIdRef.current}/guess`, {
+      round: currentIndex,
+      ...payload,
+    });
+  };
+
+  const showBadges = (data) => {
+    if (data?.new_badges?.length) {
+      data.new_badges.forEach((b) => {
+        toast.success(`${b.emoji} Badge unlocked: ${b.label}`);
+      });
+    }
+  };
+
+  // Audio failed to load: the round can't be played, so resolve it
+  // server-side (skips through remaining stages) to get the reveal + 0 score.
+  const resolveRoundAsFailed = async (history) => {
     stop();
+    let reveal = null;
+    try {
+      for (let i = 0; i < CLIP_DURATIONS.length; i++) {
+        const res = await postGuess({ skip: true });
+        if (res.data.done) { reveal = res.data.reveal; break; }
+      }
+    } catch (err) {
+      console.error('Round fail-resolve error:', err);
+    }
+    revealTrack(false, 0, history, null, reveal);
+  };
+
+  const handleSkip = async () => {
+    if (phase !== 'playing' || guessBusyRef.current) return;
+    guessBusyRef.current = true;
+    stop();
+    setStreakCount(0);
     const newHistory = [...stageHistory, { type: 'skip', text: 'SKIPPED' }];
     setStageHistory(newHistory);
 
-    setStreakCount(0);
-
-    if (clipStage >= CLIP_DURATIONS.length - 1) {
-      revealTrack(false, 0, newHistory);
-
-      const currentTrack = gameTracks[currentIndex];
-      submitScore(currentTrack.id || currentTrack.track_id, clipStage, elapsedRef.current, false, 1.0);
-    } else {
-      const newStage = clipStage + 1;
-      setClipStage(newStage);
-      playClip(startPosRef.current, CLIP_DURATIONS[newStage]);
+    try {
+      const res = await postGuess({ skip: true });
+      if (res.data.done) {
+        showBadges(res.data);
+        revealTrack(false, 0, newHistory, null, res.data.reveal);
+      } else {
+        setClipStage(res.data.stage);
+        playClip(startPosRef.current, CLIP_DURATIONS[res.data.stage]);
+      }
+    } catch (err) {
+      if (err?.response?.status !== 409) {
+        console.error('Skip failed:', err);
+        toast.error(t('game.audioError'));
+        setStageHistory(stageHistory); // roll back the slot entry
+      }
+    } finally {
+      guessBusyRef.current = false;
     }
   };
 
-  const checkGuessCorrect = (guessItem, currentTrack) => {
-    if (guessMode === 'artist') {
-      const guessStr = (guessItem.artistName || guessItem.artist || '').toLowerCase().trim();
-      const trackArtist = currentTrack.artist.toLowerCase().trim();
-      if (!guessStr || guessStr.length < 2) return false;
-
-      if (guessStr === trackArtist) return true;
-      const artistParts = trackArtist.split(/,\s*/);
-      return artistParts.some(part => part.trim() === guessStr);
-    }
-
-    const guessId = guessItem.id || guessItem.track_id;
-    const trackId2 = currentTrack.id || currentTrack.track_id;
-    return guessId && trackId2 && guessId === trackId2;
-  };
-
-  const handleGuessItem = (item) => {
-    if (phase !== 'playing') return;
+  const handleGuessItem = async (item) => {
+    if (phase !== 'playing' || guessBusyRef.current) return;
+    guessBusyRef.current = true;
     stop();
 
     setHasGuessed(true);
+    const displayText = guessMode === 'artist' ? item.artistName || item.artist : item.name;
+    const guessStage = clipStage;
 
-    const currentTrack = gameTracks[currentIndex];
-    const isCorrect = checkGuessCorrect(item, currentTrack);
-    const guessElapsed = elapsedRef.current;
+    try {
+      const res = await postGuess(
+        guessMode === 'artist'
+          ? { artist: item.artistName || item.artist || '' }
+          : { track_id: item.id || item.track_id }
+      );
+      const data = res.data;
 
-    if (isCorrect) {
+      if (data.correct) {
+        const isFirstClip = guessStage === 0;
+        const newStreakCount = isFirstClip ? streakCount + 1 : streakCount;
+        setStreakCount(newStreakCount);
 
-      const isFirstClip = clipStage === 0;
-      const newStreakCount = isFirstClip ? streakCount + 1 : streakCount;
-      setStreakCount(newStreakCount);
+        const newHistory = [...stageHistory, { type: 'correct', text: displayText }];
+        setStageHistory(newHistory);
+        triggerFlash('green');
+        showBadges(data);
 
-      let finalScore, basePoints, timePenalty;
-      if (gameMode === 'classic') {
-        basePoints = CLIP_POINTS[clipStage];
-        timePenalty = 0;
-        finalScore = basePoints;
+        revealTrack(true, data.score.final_score, newHistory, {
+          basePoints: data.score.base_score,
+          timePenalty: data.score.time_penalty,
+          guessElapsed: data.elapsed_seconds,
+          multiplier: data.multiplier || 1.0,
+        }, data.reveal);
       } else {
-        ({ finalScore, basePoints, timePenalty } = calculateTimePressureScore(
-          CLIP_POINTS[clipStage], guessElapsed, difficulty
-        ));
+        triggerFlash('red');
+        setShaking(true);
+        setTimeout(() => setShaking(false), 500);
+        setStreakCount(0);
 
-        const mult = getStreakMultiplier(newStreakCount);
-        if (mult > 1.0) {
-          finalScore = Math.floor(finalScore * mult);
+        const newHistory = [...stageHistory, { type: 'wrong', text: displayText }];
+        setStageHistory(newHistory);
+
+        if (data.done) {
+          showBadges(data);
+          revealTrack(false, 0, newHistory, null, data.reveal);
+        } else {
+          setClipStage(data.stage);
+          setTimeout(() => {
+            playClip(startPosRef.current, CLIP_DURATIONS[data.stage]);
+          }, 500);
         }
       }
-
-      const displayText = guessMode === 'artist' ? item.artistName || item.artist : item.name;
-      const newHistory = [...stageHistory, { type: 'correct', text: displayText }];
-      setStageHistory(newHistory);
-      triggerFlash('green');
-
-      const currentMult = getStreakMultiplier(newStreakCount);
-      revealTrack(true, finalScore, newHistory, {
-        basePoints, timePenalty, guessElapsed, multiplier: currentMult,
-      });
-
-      submitScore(currentTrack.id || currentTrack.track_id, clipStage, guessElapsed, true, gameMode === 'ticking_away' ? currentMult : 1.0, item.artistName || item.artist || '');
-    } else {
-      triggerFlash('red');
-      setShaking(true);
-      setTimeout(() => setShaking(false), 500);
-
-      setStreakCount(0);
-
-      const displayText = guessMode === 'artist' ? item.artistName || item.artist : item.name;
-      const newHistory = [...stageHistory, { type: 'wrong', text: displayText }];
-      setStageHistory(newHistory);
-
-      if (clipStage >= CLIP_DURATIONS.length - 1) {
-        revealTrack(false, 0, newHistory);
-        submitScore(currentTrack.id || currentTrack.track_id, clipStage, guessElapsed, false, 1.0, item.artistName || item.artist || '');
-      } else {
-        const newStage = clipStage + 1;
-        setClipStage(newStage);
-        setTimeout(() => {
-          playClip(startPosRef.current, CLIP_DURATIONS[newStage]);
-        }, 500);
+    } catch (err) {
+      if (err?.response?.status !== 409) {
+        console.error('Guess failed:', err);
+        toast.error(t('game.audioError'));
       }
+    } finally {
+      guessBusyRef.current = false;
     }
 
     setGuessQuery('');
@@ -351,58 +386,24 @@ export default function GamePage({
 
   const handleGuess = (track) => handleGuessItem(track);
 
-  const submitScore = (trackId, stage, guessElapsed, correct, multiplier = 1.0, guessText = '') => {
-
-    const guessTs = Date.now();
-
-    const startTs = clipStartTimeRef.current ?? (guessTs - guessElapsed * 1000);
-    const promise = (async () => {
-      try {
-        await ensureGuestSession();
-        const res = await api.post('/scores/submit', {
-          track_id: trackId,
-          playlist_id: playlistId,
-          clip_stage: stage,
-          start_timestamp: startTs,
-          guess_timestamp: guessTs,
-          clip_length_used: CLIP_DURATIONS[stage],
-          difficulty: difficultyKey || 'normal',
-          game_mode: gameMode,
-          guess_mode: guessMode,
-          correct,
-          is_daily: isDaily,
-          streak_bonus_applied: multiplier > 1.0,
-          multiplier: multiplier,
-
-          elapsed_seconds: Math.round(guessElapsed * 1000) / 1000,
-
-          session_id: sessionIdRef.current || null,
-
-          guess: guessMode === 'artist' ? guessText : null,
-
-          room_code: roomCode || null,
-        });
-        if (res.data?.new_badges?.length) {
-          res.data.new_badges.forEach((b) => {
-            toast.success(`${b.emoji} Badge unlocked: ${b.label}`);
-          });
-        }
-      } catch (err) {
-        console.error('Score submit failed:', err?.response?.status, err?.response?.data || err.message);
-      }
-    })();
-    pendingScoresRef.current.push(promise);
-  };
-
-  const revealTrack = (correct, points, finalHistory, scoreDetail) => {
+  const revealTrack = (correct, points, finalHistory, scoreDetail, reveal) => {
     stop();
     stopTimer();
-    const currentTrack = gameTracks[currentIndex];
+
+    const track = reveal
+      ? {
+          id: reveal.id,
+          track_id: reveal.id,
+          name: reveal.name,
+          artist: reveal.artist,
+          album_image: reveal.album_image || albumArtMap[reveal.id] || '',
+        }
+      : { id: '', name: '—', artist: '', album_image: '' };
 
     setResults((prev) => [
       ...prev,
       {
-        track: currentTrack,
+        track,
         correct,
         points,
         clipStage,
@@ -425,21 +426,15 @@ export default function GamePage({
       }
     }
 
+    setRevealInfo(track);
     setRevealResult({ correct, finalScore: points, ...scoreDetail });
     setPhase('revealed');
   };
 
   const handleNext = async () => {
-
-    if (pendingScoresRef.current.length > 0) {
-      await Promise.allSettled(pendingScoresRef.current);
-      pendingScoresRef.current = [];
-    }
-
     const nextIndex = currentIndex + 1;
-    if (nextIndex >= gameTracks.length) {
+    if (nextIndex >= totalRounds) {
       try {
-        await ensureGuestSession();
         const sessionResults = results.map((r) => ({
           correct: r.correct,
           clip_stage: r.clipStage,
@@ -456,12 +451,9 @@ export default function GamePage({
 
           session_id: sessionIdRef.current || null,
 
+          client_hour: new Date().getHours(),
         });
-        if (scRes.data?.new_badges?.length) {
-          scRes.data.new_badges.forEach((b) => {
-            toast.success(`${b.emoji} Badge unlocked: ${b.label}`);
-          });
-        }
+        showBadges(scRes.data);
       } catch (err) {
         console.warn('Session complete failed:', err);
       }
@@ -469,12 +461,12 @@ export default function GamePage({
       onEnd({
         score,
         correctGuesses,
-        totalTracks: gameTracks.length,
+        totalTracks: totalRounds,
         results,
         playlistName,
         playlistId,
         playlistImage: '',
-        maxScore: gameTracks.length * CLIP_POINTS[0],
+        maxScore: totalRounds * CLIP_POINTS[0],
         difficulty: difficultyKey,
         gameMode,
         guessMode,
@@ -484,7 +476,7 @@ export default function GamePage({
 
       if (onTrackComplete) onTrackComplete(currentIndex + 1);
       setCurrentIndex(nextIndex);
-      initRound(gameTracks[nextIndex]);
+      initRound(nextIndex);
     }
   };
 
@@ -520,15 +512,9 @@ export default function GamePage({
       .slice(0, 7);
   }, [guessQuery, guessMode, searchPool]);
 
-  const currentTrack = gameTracks[currentIndex];
-  const trackId = currentTrack?.id || currentTrack?.track_id;
-  const enrichedTrack = currentTrack
-    ? { ...currentTrack, album_image: albumArtMap[trackId] || currentTrack.album_image || '' }
-    : null;
-
   const currentMultiplier = gameMode === 'ticking_away' ? getStreakMultiplier(streakCount) : 1.0;
 
-  if (!enrichedTrack && !needsAudioUnlock) {
+  if (!sessionReady && !needsAudioUnlock) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <Loader2 className="h-8 w-8 animate-spin" style={{ color: 'var(--color-neon)' }} />
@@ -582,7 +568,7 @@ export default function GamePage({
             </span>
           </div>
           <div className="font-mono text-xs uppercase tracking-wider" style={{ color: 'var(--color-text-muted)' }}>
-            <span style={{ color: 'var(--color-text)' }}>{currentIndex + 1}</span>/{gameTracks.length}
+            <span style={{ color: 'var(--color-text)' }}>{currentIndex + 1}</span>/{totalRounds}
           </div>
         </div>
 
@@ -711,7 +697,7 @@ export default function GamePage({
         </div>
 
         {}
-        {phase === 'revealed' && enrichedTrack && (
+        {phase === 'revealed' && revealInfo && (
           <div className="mb-6 animate-card-enter">
             <div
               className="p-6 text-center space-y-4 rounded-sm"
@@ -720,20 +706,20 @@ export default function GamePage({
                 border: '1px solid var(--color-border)',
               }}
             >
-              {enrichedTrack.album_image && (
+              {revealInfo.album_image && (
                 <img
-                  src={enrichedTrack.album_image}
-                  alt={enrichedTrack.name}
+                  src={revealInfo.album_image}
+                  alt={revealInfo.name}
                   className="w-28 h-28 mx-auto object-cover rounded-sm"
                   style={{ border: '1px solid var(--color-border-subtle)' }}
                 />
               )}
               <div>
                 <p className="font-heading text-lg font-bold" style={{ color: 'var(--color-text)' }}>
-                  {enrichedTrack.name}
+                  {revealInfo.name}
                 </p>
                 <p className="font-body text-sm" style={{ color: 'var(--color-text-muted)' }}>
-                  {enrichedTrack.artist}
+                  {revealInfo.artist}
                 </p>
               </div>
               {revealResult?.correct ? (
@@ -758,7 +744,7 @@ export default function GamePage({
                 <div>
                   {guessMode === 'artist' ? (
                     <p className="font-mono text-xs uppercase tracking-wider" style={{ color: 'var(--color-text-dim)' }}>
-                      {t('game.theArtistWas', { artist: enrichedTrack.artist })}
+                      {t('game.theArtistWas', { artist: revealInfo.artist })}
                     </p>
                   ) : (
                     <p className="font-mono text-xs uppercase tracking-wider" style={{ color: 'var(--color-text-dim)' }}>
@@ -767,9 +753,9 @@ export default function GamePage({
                   )}
 
                   {}
-                  {trackId && (
+                  {revealInfo.id && (
                     <a
-                      href={`https://open.spotify.com/track/${trackId}`}
+                      href={`https://open.spotify.com/track/${revealInfo.id}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="inline-flex items-center gap-1.5 mt-3 px-4 py-2 rounded-full font-mono text-xs font-bold uppercase tracking-wider btn-tactile transition-all animate-slide-in-up"
@@ -793,7 +779,7 @@ export default function GamePage({
                   color: 'var(--color-bg)',
                 }}
               >
-                {currentIndex + 1 >= gameTracks.length ? t('game.seeResults') : t('game.nextSong')}
+                {currentIndex + 1 >= totalRounds ? t('game.seeResults') : t('game.nextSong')}
               </button>
             </div>
           </div>

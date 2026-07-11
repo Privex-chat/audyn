@@ -939,9 +939,19 @@ ALLOWED_AUDIO_DOMAINS = {
     "anon-podcast-api.spotifycdn.com",
 }
 
-@api_router.get("/audio-proxy")
-async def audio_proxy(url: str):
-    decoded_url = unquote(url)
+# When true, session clip responses hand the actual bytes off to nginx via
+# X-Accel-Redirect: nginx fetches from Spotify once per track and serves every
+# replay from its disk cache — Python never streams audio. Requires the
+# /_clip/ internal location (see docs/deployment.md).
+X_ACCEL_AUDIO = os.environ.get("X_ACCEL_AUDIO", "false").lower() == "true"
+
+_AUDIO_HEADERS = {
+    "Accept-Ranges": "bytes",
+    "Cache-Control": "public, max-age=3600",
+    "Access-Control-Allow-Origin": "*",
+}
+
+def _validated_audio_url(decoded_url: str):
     parsed = urlparse(decoded_url)
     if parsed.hostname not in ALLOWED_AUDIO_DOMAINS:
         raise HTTPException(
@@ -951,17 +961,16 @@ async def audio_proxy(url: str):
         raise HTTPException(status_code=400, detail="Invalid URL scheme")
     if parsed.username or parsed.password:
         raise HTTPException(status_code=400, detail="Invalid URL")
+    return parsed
 
+def _stream_upstream_audio(decoded_url: str):
+    """Proxy-stream an allowed CDN audio URL, caching small files in memory."""
     cached_bytes = _audio_cache.get(decoded_url)
     if cached_bytes is not None:
         return Response(
             content=cached_bytes,
             media_type="audio/mpeg",
-            headers={
-                "Accept-Ranges": "bytes",
-                "Cache-Control": "public, max-age=3600",
-                "Access-Control-Allow-Origin": "*",
-            },
+            headers=dict(_AUDIO_HEADERS),
         )
 
     MAX_CACHE_SIZE = 1_048_576  # 1 MB
@@ -995,12 +1004,68 @@ async def audio_proxy(url: str):
     return StreamingResponse(
         stream_audio(),
         media_type="audio/mpeg",
-        headers={
-            "Accept-Ranges": "bytes",
-            "Cache-Control": "public, max-age=3600",
-            "Access-Control-Allow-Origin": "*",
-        },
+        headers=dict(_AUDIO_HEADERS),
     )
+
+@api_router.get("/audio-proxy")
+async def audio_proxy(url: str):
+    # Legacy path for pre-session app versions; new clients use the opaque
+    # /sessions/{id}/clip/{round} endpoint which never exposes the CDN URL.
+    decoded_url = unquote(url)
+    _validated_audio_url(decoded_url)
+    return _stream_upstream_audio(decoded_url)
+
+@api_router.get("/sessions/{session_id}/clip/{round_no}")
+async def get_session_clip(session_id: str, round_no: int):
+    """Serve the audio for one round of a game session.
+
+    The URL is an opaque capability: possession of the unguessable session_id
+    is the auth (Howler can't send Authorization headers), and nothing in the
+    request or response identifies the track — that's the anti-cheat point.
+    """
+    if len(session_id) > 64 or round_no < 0 or round_no >= 1000:
+        raise HTTPException(status_code=400, detail="Invalid clip request")
+
+    async with get_conn() as conn:
+        row = await conn.fetchrow(
+            "SELECT tracks FROM game_sessions WHERE session_id = $1 AND expires_at > NOW()",
+            session_id,
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        from sessions import _load_tracks_json, _entry_by_position
+        tracks_data = _load_tracks_json(row["tracks"])
+        tid, entry = _entry_by_position(tracks_data, round_no)
+        if entry is None or not entry.get("preview_url"):
+            raise HTTPException(status_code=404, detail="No clip for this round")
+
+        # First fetch of this round starts the server-side timer used for
+        # ticking-away scoring.
+        if entry.get("started_at") is None:
+            await conn.execute(
+                """
+                UPDATE game_sessions
+                SET tracks = jsonb_set(tracks, ARRAY[$1::text, 'started_at'], to_jsonb($2::float8))
+                WHERE session_id = $3
+                """,
+                tid,
+                time.time(),
+                session_id,
+            )
+
+    parsed = _validated_audio_url(entry["preview_url"])
+
+    if X_ACCEL_AUDIO and parsed.hostname == "p.scdn.co":
+        accel = f"/_clip{parsed.path}"
+        if parsed.query:
+            accel += f"?{parsed.query}"
+        return Response(
+            status_code=200,
+            headers={**_AUDIO_HEADERS, "X-Accel-Redirect": accel},
+        )
+
+    return _stream_upstream_audio(entry["preview_url"])
 
 @api_router.get("/")
 async def root():

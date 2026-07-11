@@ -158,7 +158,34 @@ server {
         proxy_buffering off;
         proxy_read_timeout 60s;
     }
+
+    # Session clip audio, handed off by the app via X-Accel-Redirect.
+    # nginx fetches each preview from Spotify once and serves every replay
+    # from its disk cache — Python never streams audio bytes.
+    # Enable by setting X_ACCEL_AUDIO=true in backend/.env.
+    location /_clip/ {
+        internal;
+        proxy_pass https://p.scdn.co/;
+        proxy_ssl_server_name on;
+        proxy_set_header Host p.scdn.co;
+        proxy_set_header Referer "https://open.spotify.com/";
+
+        proxy_cache audyn_audio;
+        proxy_cache_key $uri;              # token query params don't fragment the cache
+        proxy_cache_valid 200 7d;
+        proxy_buffering on;                # required for proxy_cache
+
+        add_header Access-Control-Allow-Origin * always;
+        add_header Cache-Control "public, max-age=3600" always;
+    }
 }
+```
+
+Add the cache zone to the `http` block (e.g. `/etc/nginx/conf.d/audyn-cache.conf`):
+
+```nginx
+proxy_cache_path /var/cache/nginx/audyn_audio levels=1:2 keys_zone=audyn_audio:10m
+                 max_size=2g inactive=7d use_temp_path=off;
 ```
 
 ```bash

@@ -89,15 +89,19 @@ async def create_room(req: CreateRoomRequest, user=Depends(require_user)):
             return d
 
         tracks_by_id = {r["track_id"]: map_track(r) for r in tracks}
-        # FIX: return tracks in the seeded-deterministic order from track_ids.
-        # Removed the unseeded random.shuffle that was producing a different
-        # order for the host vs the joining guest, desynchronising the game.
-        ordered_tracks = [tracks_by_id[tid] for tid in selected if tid in tracks_by_id]
+        # Return the selected tracks name-sorted: identical pool for both
+        # players (autocomplete), but the response order reveals nothing about
+        # the play order, which lives server-side in room.track_ids and is
+        # applied by /sessions/start.
+        pool = sorted(
+            (tracks_by_id[tid] for tid in selected if tid in tracks_by_id),
+            key=lambda t: t["name"].lower(),
+        )
 
     return {
         "room_code": code,
         "room_id": str(room_id),
-        "tracks": ordered_tracks,
+        "tracks": pool,
     }
 
 @rooms_router.post("/join/{room_code}")
@@ -136,14 +140,17 @@ async def join_room(room_code: str, user=Depends(require_user)):
             return d
 
         tracks_by_id = {r["track_id"]: map_track(r) for r in tracks}
-        # FIX: preserve the exact seeded order stored in room["track_ids"] so
-        # the guest sees tracks in the same sequence as the host.
-        ordered_tracks = [tracks_by_id[tid] for tid in room["track_ids"] if tid in tracks_by_id]
+        # Name-sorted pool — same set as the host, play order stays secret
+        # (applied server-side by /sessions/start from room.track_ids).
+        pool = sorted(
+            (tracks_by_id[tid] for tid in room["track_ids"] if tid in tracks_by_id),
+            key=lambda t: t["name"].lower(),
+        )
 
     return {
         "room_code": room["room_code"],
         "room_id": str(room["id"]),
-        "tracks": ordered_tracks,
+        "tracks": pool,
         "difficulty": room["difficulty"],
         "game_mode": room["game_mode"],
         "guess_mode": room["guess_mode"],
