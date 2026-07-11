@@ -549,16 +549,29 @@ async def fetch_playlist_embed_only(http, playlist_id, known_total: int = 0):
     playlist_image = cover_sources[0]["url"] if cover_sources else ""
     track_list = entity.get("trackList", [])
 
-    EMBED_TRACKLIST_CAP = 100
     authoritative_total = known_total or entity.get("trackCount", 0)
     if authoritative_total:
+        # We know the real size (from the API or the embed's own field): the
+        # fetch is truncated if the embed showed fewer than that.
         total_stated = max(authoritative_total, len(track_list))
-        embed_truncated = len(track_list) < total_stated
-    else:
-        # No authoritative total anywhere. If the list hit the embed cap the
-        # playlist is almost certainly bigger than what we can see.
+        embed_truncated = len(track_list) < authoritative_total
+    elif HAS_SPOTIFY_CREDS:
+        # Creds exist but we fell back to embed → the API is temporarily
+        # penalized. Spotify's embed caps its trackList (observed 98–100,
+        # variable) and no longer reports trackCount, so we CANNOT certify
+        # we've seen the whole playlist. Mark incomplete regardless of length:
+        # short cache TTL + honest warning, and it auto-heals to the full
+        # track list once API access recovers. (A genuinely small playlist
+        # just shows the notice until the next successful API fetch confirms
+        # it — harmless and self-correcting.)
         total_stated = len(track_list)
-        embed_truncated = len(track_list) >= EMBED_TRACKLIST_CAP
+        embed_truncated = True
+    else:
+        # No credentials at all: embed is the permanent ceiling (documented
+        # ~100-track cap for keyless self-hosting). Treat what we have as
+        # complete so it doesn't re-fetch forever.
+        total_stated = len(track_list)
+        embed_truncated = False
 
     # FIX: build two separate lists so that all playable tracks (even those
     # without a preview URL) are persisted to the DB for the worker to retry,
