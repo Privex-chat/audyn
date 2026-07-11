@@ -280,25 +280,27 @@ export default function HomePage({
       <div className="w-full max-w-md space-y-6">
 
         {}
-        <div className="text-center pt-6 pb-2 space-y-3">
-          <h2
-            className="font-heading text-3xl font-extrabold tracking-tight neon-glow"
-            style={{ color: 'var(--color-neon)' }}
-          >
-            {t('home.title')}
-          </h2>
-          <p className="font-body text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-            {t('home.subtitle')}
-          </p>
-          {playersToday > 0 && (
-            <div className="flex items-center justify-center gap-1.5">
-              <span className="w-2 h-2 rounded-full animate-pulse" style={{ backgroundColor: 'var(--color-success)' }} />
-              <span className="font-mono text-[11px]" style={{ color: 'var(--color-text-muted)' }}>
-                {t('home.playersToday', { count: playersToday, s: playersToday !== 1 ? 's' : '' })}
-              </span>
-            </div>
-          )}
-        </div>
+        {!playlistInfo && (
+          <div className="text-center pt-6 pb-2 space-y-3 animate-slide-in-down">
+            <h2
+              className="font-heading text-3xl font-extrabold tracking-tight neon-glow"
+              style={{ color: 'var(--color-neon)' }}
+            >
+              {t('home.title')}
+            </h2>
+            <p className="font-body text-sm" style={{ color: 'var(--color-text-secondary)' }}>
+              {t('home.subtitle')}
+            </p>
+            {playersToday > 0 && (
+              <div className="flex items-center justify-center gap-1.5">
+                <span className="w-2 h-2 rounded-full animate-pulse" style={{ backgroundColor: 'var(--color-success)' }} />
+                <span className="font-mono text-[11px]" style={{ color: 'var(--color-text-muted)' }}>
+                  {t('home.playersToday', { count: playersToday, s: playersToday !== 1 ? 's' : '' })}
+                </span>
+              </div>
+            )}
+          </div>
+        )}
 
         {}
         {challengeBanner && (
@@ -320,17 +322,17 @@ export default function HomePage({
 
         {showAnnouncement && (
           <div
-            className="p-3 rounded-sm text-center animate-slide-in-down flex items-center justify-between gap-2"
+            className="px-3 py-2 rounded-sm animate-slide-in-down flex items-center justify-between gap-2"
             style={{
-              backgroundColor: 'var(--color-neon-subtle)',
-              border: '1px solid var(--color-neon-dim)',
+              backgroundColor: 'var(--color-surface-hl)',
+              border: '1px solid var(--color-border-subtle)',
             }}
           >
             <div className="flex items-center gap-2 text-left flex-1">
-              <span className="font-mono text-xs font-bold" style={{ color: 'var(--color-neon)' }}>
-                {t('home.announcement.title')}
+              <span className="font-mono text-[10px] font-medium uppercase tracking-wider" style={{ color: 'var(--color-text-dim)' }}>
+                {t('home.announcement.title').replace('🎉 ', '')}
               </span>
-              <p className="font-body text-[11px]" style={{ color: 'var(--color-text-secondary)' }}>
+              <p className="font-body text-[10px]" style={{ color: 'var(--color-text-muted)' }}>
                 {t('home.announcement.message')}
               </p>
             </div>
@@ -339,15 +341,15 @@ export default function HomePage({
                 setShowAnnouncement(false);
                 localStorage.setItem('audyn_announcement_dismissed', 'true');
               }}
-              className="flex-shrink-0 p-1 rounded transition-colors btn-tactile"
+              className="flex-shrink-0 p-0.5 rounded transition-colors btn-tactile"
               style={{
-                color: 'var(--color-text-muted)',
+                color: 'var(--color-text-dim)',
                 backgroundColor: 'transparent',
                 border: 'none',
               }}
               aria-label="Dismiss announcement"
             >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <line x1="18" y1="6" x2="6" y2="18" />
                 <line x1="6" y1="6" x2="18" y2="18" />
               </svg>
