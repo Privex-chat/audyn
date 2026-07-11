@@ -121,16 +121,17 @@ export default function GamePage({
     (async () => {
       try {
         await ensureGuestSession();
-        const res = await api.post('/sessions/start', {
+        const startPayload = {
           playlist_id: playlistId || '',
-          track_ids: null,
           song_count: songCount,
           difficulty: difficultyKey || 'normal',
           game_mode: gameMode,
           guess_mode: guessMode,
           is_daily: isDaily,
-          room_code: roomCode || null,
-        });
+        };
+        if (roomCode) startPayload.room_code = roomCode;
+
+        const res = await api.post('/sessions/start', startPayload);
         sessionIdRef.current = res.data.session_id;
         setTotalRounds(res.data.total_rounds);
         setSessionReady(true);
