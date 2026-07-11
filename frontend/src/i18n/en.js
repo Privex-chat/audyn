@@ -53,6 +53,7 @@ const en = {
     challengeFriend: '⚔️ Challenge a Friend',
     changePlaylist: 'Change playlist',
     playableTracks: '{count} playable tracks',
+    loadingPreviews: 'Loading previews…',
 
     beatScore: '⚔️ Beat {username}\'s score of {score}!',
 
