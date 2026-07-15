@@ -191,6 +191,22 @@ export default function GamePage({
         setSessionReady(true);
       } catch (err) {
         console.error('Session start failed:', err);
+        
+        // Check if this is a "no playable tracks yet" error that we can retry
+        const detail = err?.response?.data?.detail;
+        const isPreviewLoadingError = detail && typeof detail === 'object' && detail.playable_count !== undefined && detail.pending_count > 0;
+        
+        if (isPreviewLoadingError && !sessionStartedRef.current) {
+          // Auto-retry after a short delay - the background preview fill might complete
+          const waitTime = detail.retry_after_seconds ? detail.retry_after_seconds * 1000 : 3000;
+          toast.loading(t('game.waitingPreviews') || `Waiting for previews... retrying in ${Math.round(waitTime/1000)}s`, { id: 'session-retry' });
+          await new Promise(r => setTimeout(r, waitTime));
+          toast.dismiss('session-retry');
+          // Reset the guard to allow retry
+          sessionStartedRef.current = false;
+          return; // The effect will re-run and retry
+        }
+        
         toast.error(getApiError(err, t('game.audioError')));
         onBack();
       }

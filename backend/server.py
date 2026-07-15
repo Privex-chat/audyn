@@ -1136,6 +1136,71 @@ async def playlist_status(playlist_id: str):
         "filling": (pending or 0) > 0,
     }
 
+
+@api_router.get("/playlist/{playlist_id}/wait-for-previews")
+async def wait_for_previews(playlist_id: str, min_tracks: int = 1, timeout: int = 30):
+    """
+    Poll until at least min_tracks have playable previews or timeout expires.
+    Used by the frontend to wait for background preview fill before starting a game.
+    """
+    actual_id = extract_playlist_id(playlist_id)
+    if not re.match(r"^[a-zA-Z0-9]+$", actual_id or ""):
+        raise HTTPException(status_code=400, detail="Invalid playlist ID")
+
+    # Clamp timeout to reasonable range
+    timeout = max(1, min(timeout, 120))
+    min_tracks = max(1, min_tracks)
+
+    start_time = time.time()
+    poll_interval = 2.0  # seconds
+    playable = 0
+    pending = 0
+    total = 0
+
+    while time.time() - start_time < timeout:
+        async with get_conn() as conn:
+            row = await conn.fetchrow(
+                "SELECT total_in_playlist FROM playlists WHERE playlist_id = $1",
+                actual_id,
+            )
+            if not row:
+                return {"ready": False, "playable": 0, "total": 0, "pending": 0, "error": "Playlist not found"}
+
+            playable = await conn.fetchval(
+                """
+                SELECT COUNT(*) FROM playlist_tracks pt
+                JOIN tracks t ON t.track_id = pt.track_id
+                WHERE pt.playlist_id = $1
+                  AND t.preview_url IS NOT NULL AND t.preview_url != ''
+                  AND t.preview_unavailable = FALSE
+                """,
+                actual_id,
+            )
+            pending = await conn.fetchval(
+                """
+                SELECT COUNT(*) FROM playlist_tracks pt
+                JOIN tracks t ON t.track_id = pt.track_id
+                WHERE pt.playlist_id = $1
+                  AND (t.preview_url IS NULL OR t.preview_url = '')
+                  AND t.preview_unavailable = FALSE
+                  AND t.preview_retry_count < 5
+                """,
+                actual_id,
+            )
+
+        playable = playable or 0
+        pending = pending or 0
+        total = row["total_in_playlist"] or 0
+
+        if playable >= min_tracks:
+            return {"ready": True, "playable": playable, "total": total, "pending": pending}
+
+        await asyncio.sleep(poll_interval)
+
+    # Timeout — return current state
+    return {"ready": False, "playable": playable, "total": total, "pending": pending}
+
+
 @api_router.get("/playlist/{playlist_id:path}")
 async def get_playlist(
     playlist_id: str, request: Request, refresh: bool = False,

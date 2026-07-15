@@ -159,10 +159,41 @@ async def start_session(req: StartSessionRequest, user=Depends(require_user)):
             )
 
         if not ordered:
-            raise HTTPException(
-                status_code=400,
-                detail="None of the provided track IDs are playable",
+            # Provide detailed error info for better UX — frontend can show
+            # playable/pending counts and auto-retry instead of a generic toast.
+            total_in_playlist = await conn.fetchval(
+                "SELECT total_in_playlist FROM playlists WHERE playlist_id = $1",
+                req.playlist_id,
             )
+            playable_count = await conn.fetchval(
+                """
+                SELECT COUNT(*) FROM playlist_tracks pt
+                JOIN tracks t ON t.track_id = pt.track_id
+                WHERE pt.playlist_id = $1
+                  AND t.preview_url IS NOT NULL AND t.preview_url != ''
+                  AND t.preview_unavailable = FALSE
+                """,
+                req.playlist_id,
+            )
+            pending_count = await conn.fetchval(
+                """
+                SELECT COUNT(*) FROM playlist_tracks pt
+                JOIN tracks t ON t.track_id = pt.track_id
+                WHERE pt.playlist_id = $1
+                  AND (t.preview_url IS NULL OR t.preview_url = '')
+                  AND t.preview_unavailable = FALSE
+                  AND t.preview_retry_count < 5
+                """,
+                req.playlist_id,
+            )
+            detail = {
+                "message": "None of the provided track IDs are playable",
+                "playable_count": playable_count or 0,
+                "total_in_playlist": total_in_playlist or 0,
+                "pending_count": pending_count or 0,
+                "retry_after_seconds": 3,
+            }
+            raise HTTPException(status_code=400, detail=detail)
 
         tracks_json: dict[str, dict] = {"_streak": 0}
         for i, r in enumerate(ordered):

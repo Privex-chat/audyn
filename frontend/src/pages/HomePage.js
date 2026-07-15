@@ -244,8 +244,58 @@ export default function HomePage({
     }
   };
 
+  // Poll the wait-for-previews endpoint until enough tracks are playable
+  const waitForPlayableTracks = async (playlistId, minTracks = 1) => {
+    const timeoutMs = 60000; // 60 second max wait
+    const startTime = Date.now();
+    const pollInterval = 2000; // 2 seconds
+
+    while (Date.now() - startTime < timeoutMs) {
+      try {
+        const res = await api.get(`/playlist/${playlistId}/wait-for-previews`, {
+          params: { min_tracks: minTracks, timeout: 30 }
+        });
+        if (res.data.ready) {
+          // Refresh the playlist info to get the latest tracks
+          const fresh = await api.get(`/playlist/${playlistId}`);
+          setPlaylistInfo(fresh.data);
+          return fresh.data;
+        }
+        // Not ready yet, show progress
+        setFillStatus({
+          playable: res.data.playable,
+          total: res.data.total,
+          pending: res.data.pending,
+        });
+      } catch (err) {
+        console.warn('wait-for-previews poll error:', err);
+      }
+      await new Promise(r => setTimeout(r, pollInterval));
+    }
+    // Timeout - return current playlist info
+    return playlistInfo;
+  };
+
   const handleStart = async () => {
     if (!playlistInfo) return;
+
+    // Check if we have any playable tracks
+    const playableNow = fillStatus?.playable ?? playlistInfo.total_tracks;
+    const totalInPlaylist = fillStatus?.total ?? playlistInfo.total_in_playlist;
+
+    if (playableNow === 0) {
+      // No playable tracks yet - wait for background preview fill
+      toast.loading(t('home.waitingPreviews') || 'Previews are loading... please wait', { id: 'preview-wait' });
+      try {
+        await waitForPlayableTracks(playlistInfo.playlist_id, 1);
+        toast.dismiss('preview-wait');
+      } catch {
+        toast.dismiss('preview-wait');
+        toast.error(t('home.previewsTimeout') || 'Timed out waiting for previews. Try again in a moment.');
+        return;
+      }
+    }
+
     const info = await freshestPlaylist();
     const count = songCount === 'all' ? info.total_tracks : parseInt(songCount);
     onStart(info, { songCount: count, difficulty, gameMode, guessMode });
@@ -704,14 +754,26 @@ return (
               <Button
                 data-testid="start-game-btn"
                 onClick={handleStart}
+                disabled={fillStatus && fillStatus.playable === 0}
                 className="w-full h-14 font-bold text-base uppercase tracking-wider rounded-sm btn-tactile transition-all"
                 style={{
-                  backgroundColor: 'var(--color-neon)',
+                  backgroundColor: fillStatus && fillStatus.playable === 0 ? 'var(--color-border)' : 'var(--color-neon)',
                   color: 'var(--color-bg)',
+                  opacity: fillStatus && fillStatus.playable === 0 ? 0.5 : 1,
+                  cursor: fillStatus && fillStatus.playable === 0 ? 'not-allowed' : 'pointer',
                 }}
               >
-                <Play className="h-5 w-5 mr-2" />
-                {t('home.startGame')}
+                {fillStatus && fillStatus.playable === 0 ? (
+                  <>
+                    <Loader2 className="h-5 w-5 mr-2 animate-spin" />
+                    {t('home.loadingPreviews') || 'Loading previews...'}
+                  </>
+                ) : (
+                  <>
+                    <Play className="h-5 w-5 mr-2" />
+                    {t('home.startGame')}
+                  </>
+                )}
               </Button>
               {playlistInfo && (
                 <button

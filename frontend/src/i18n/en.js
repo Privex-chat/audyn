@@ -54,6 +54,8 @@ const en = {
     changePlaylist: 'Change playlist',
     playableTracks: '{count} playable tracks',
     loadingPreviews: 'Loading previews…',
+    waitingPreviews: 'Previews are loading… please wait',
+    previewsTimeout: 'Timed out waiting for previews. Try again in a moment.',
     back: 'Back',
     backToPlaylist: 'Back to playlist selection',
 
@@ -82,7 +84,7 @@ const en = {
     artistDesc: 'Name the artist',
   },
 
-  game: {
+game: {
     tapToBegin: 'TAP TO BEGIN',
     tapToUnlock: 'Tap anywhere to unlock audio',
     listening: 'LISTENING...',
@@ -104,6 +106,7 @@ const en = {
     base: 'base',
     timePenalty: 'time penalty',
     streakMultiplier: '× {mult} streak',
+    waitingPreviews: 'Waiting for previews to load...',
 
     kbPlay: '[Space] Play',
     kbGuess: '[Enter] Guess',
