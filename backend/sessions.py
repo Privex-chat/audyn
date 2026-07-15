@@ -463,7 +463,6 @@ async def submit_guess(
 async def _update_daily_streak_bg(user_id: str):
     """Background task to update daily streak."""
     try:
-        from daily import update_daily_streak
         from database import get_conn as _get_conn
         async with _get_conn() as conn:
             await update_daily_streak(conn, user_id)
