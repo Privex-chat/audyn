@@ -376,6 +376,12 @@ export default function GamePage({
       if (res.data.done) {
         showBadges(res.data);
         revealTrack(false, 0, newHistory, null, res.data.reveal);
+
+        // Prefetch next round's audio after skip completes the round
+        const nextRoundIndex = currentIndex + 1;
+        if (nextRoundIndex < totalRounds) {
+          loadAudio(clipUrl(nextRoundIndex));
+        }
       } else {
         setClipStage(res.data.stage);
         playClip(startPosRef.current, CLIP_DURATIONS[res.data.stage]);
@@ -419,13 +425,6 @@ export default function GamePage({
     if (inputRef.current) inputRef.current.value = '';
     clearTimeout(debounceRef.current);
 
-    // Prefetch next round's audio in background while waiting for guess response
-    const nextRoundIndex = currentIndex + 1;
-    const shouldPrefetch = nextRoundIndex < totalRounds;
-    if (shouldPrefetch) {
-      loadAudio(clipUrl(nextRoundIndex));
-    }
-
     try {
       const res = await postGuess(
         guessMode === 'artist'
@@ -450,6 +449,12 @@ export default function GamePage({
           guessElapsed: data.elapsed_seconds,
           multiplier: data.multiplier || 1.0,
         }, data.reveal);
+
+        // Prefetch next round's audio after correct guess
+        const nextRoundIndex = currentIndex + 1;
+        if (nextRoundIndex < totalRounds) {
+          loadAudio(clipUrl(nextRoundIndex));
+        }
       } else {
         triggerFlash('red');
         setShaking(true);
@@ -462,6 +467,12 @@ export default function GamePage({
         if (data.done) {
           showBadges(data);
           revealTrack(false, 0, newHistory, null, data.reveal);
+
+          // Prefetch next round's audio after final wrong guess (round complete)
+          const nextRoundIndex = currentIndex + 1;
+          if (nextRoundIndex < totalRounds) {
+            loadAudio(clipUrl(nextRoundIndex));
+          }
         } else {
           setClipStage(data.stage);
           setTimeout(() => {
