@@ -978,9 +978,11 @@ export default function GamePage({
                 value={guessQuery}
                 onChange={(e) => {
                   const val = e.target.value;
+                  // Synchronous local state for immediate text entry & cursor behavior
+                  setGuessQuery(val);
+                  // Debounce only the dropdown filtering
                   clearTimeout(debounceRef.current);
                   debounceRef.current = setTimeout(() => {
-                    setGuessQuery(val);
                     setShowDropdown(val.length > 0);
                   }, 120);
                 }}
