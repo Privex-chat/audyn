@@ -3,7 +3,7 @@ import secrets
 import logging
 from datetime import datetime, timezone, timedelta
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from pydantic import BaseModel
 
 from auth import require_user
@@ -239,7 +239,12 @@ async def start_session(req: StartSessionRequest, user=Depends(require_user)):
 
 
 @sessions_router.post("/{session_id}/guess")
-async def submit_guess(session_id: str, req: GuessRequest, user=Depends(require_user)):
+async def submit_guess(
+    session_id: str,
+    req: GuessRequest,
+    user=Depends(require_user),
+    background_tasks: BackgroundTasks = None,
+):
     """Server-checked guess for one round. The client never learns the track
     until this endpoint reveals it; scores are computed and stored here."""
     if not req.skip and not req.track_id and not (req.artist or "").strip():
@@ -393,12 +398,6 @@ async def submit_guess(session_id: str, req: GuessRequest, user=Depends(require_
                 correct,
             )
 
-            if is_daily:
-                try:
-                    await update_daily_streak(conn, user["id"])
-                except Exception as e:
-                    logger.warning(f"Daily streak update failed: {e}")
-
             if session["room_id"] and score_data["final_score"] > 0:
                 room = await conn.fetchrow(
                     "SELECT id, host_user_id, guest_user_id FROM rooms WHERE id = $1",
@@ -423,24 +422,31 @@ async def submit_guess(session_id: str, req: GuessRequest, user=Depends(require_
                             score_data["final_score"], correct_inc, room["id"],
                         )
 
+    # --- Critical DB transaction committed. Now fire background tasks. ---
+
+    if background_tasks:
+        # Daily streak update - fire and forget
+        if is_daily:
+            background_tasks.add_task(_update_daily_streak_bg, user["id"])
+        
+        # Achievement check - fire and forget
+        background_tasks.add_task(
+            _check_achievements_bg,
+            user["id"],
+            correct,
+            stage,
+            elapsed,
+            session["difficulty"],
+        )
+
     logger.info(
         f"Guess resolved: session={session_id} round={req.round} "
         f"correct={correct} stage={stage} final={score_data['final_score']}"
     )
 
     new_badges = []
-    try:
-        new_badges = await check_per_track_achievements(
-            user_id=user["id"],
-            track_result={
-                "correct": correct,
-                "clip_stage": stage,
-                "elapsed_seconds": elapsed,
-            },
-            difficulty=session["difficulty"],
-        )
-    except Exception as e:
-        logger.warning(f"Achievement check failed: {e}")
+    # Note: badges are now checked in background; response won't include them
+    # for this request. Frontend can poll /achievements or rely on next page load.
 
     response = {
         "correct": correct,
@@ -451,10 +457,30 @@ async def submit_guess(session_id: str, req: GuessRequest, user=Depends(require_
         "multiplier": multiplier,
         "elapsed_seconds": round(elapsed, 3),
     }
-    if new_badges:
-        response["new_badges"] = [
-            {"key": k, "emoji": BADGES[k]["emoji"], "label": BADGES[k]["label"]}
-            for k in new_badges
-            if k in BADGES
-        ]
     return response
+
+
+async def _update_daily_streak_bg(user_id: str):
+    """Background task to update daily streak."""
+    try:
+        from database import get_conn as _get_conn
+        async with _get_conn() as conn:
+            await update_daily_streak(conn, user_id)
+    except Exception as e:
+        logger.warning(f"Background daily streak update failed: {e}")
+
+
+async def _check_achievements_bg(user_id: str, correct: bool, clip_stage: int, elapsed_seconds: float, difficulty: str):
+    """Background task to check per-track achievements."""
+    try:
+        await check_per_track_achievements(
+            user_id=user_id,
+            track_result={
+                "correct": correct,
+                "clip_stage": clip_stage,
+                "elapsed_seconds": elapsed_seconds,
+            },
+            difficulty=difficulty,
+        )
+    except Exception as e:
+        logger.warning(f"Background achievement check failed: {e}")

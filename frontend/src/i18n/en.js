@@ -95,6 +95,7 @@ game: {
     audioError: 'AUDIO ERROR',
     typeGuess: 'Type your guess...',
     typeArtist: 'Type the artist name...',
+    checking: 'Checking...',
     skip: 'Skip',
     timePressure: 'Time pressure',
     nextSong: 'NEXT SONG',

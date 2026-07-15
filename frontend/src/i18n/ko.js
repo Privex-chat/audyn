@@ -65,7 +65,7 @@ const ko = {
       easy: '쉬움',
     },
   
-    game: {
+game: {
       tapToBegin: '탭하여 시작',
       tapToUnlock: '화면을 탭하여 오디오를 활성화하세요',
       listening: '듣는 중...',
@@ -76,6 +76,7 @@ const ko = {
       audioError: '오디오 오류',
       typeGuess: '정답을 입력하세요...',
       typeArtist: '아티스트 이름을 입력하세요...',
+      checking: '확인 중...',
       skip: '건너뛰기',
       timePressure: '시간 압박',
       nextSong: '다음 노래',

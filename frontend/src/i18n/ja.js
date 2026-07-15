@@ -90,6 +90,7 @@ const ja = {
     audioError: 'オーディオエラー',
     typeGuess: '答えを入力...',
     typeArtist: 'アーティスト名を入力...',
+    checking: '判定中...',
     skip: 'スキップ',
     timePressure: 'タイムプレッシャー',
     nextSong: '次の曲へ',

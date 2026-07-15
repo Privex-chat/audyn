@@ -72,6 +72,7 @@ export default function GamePage({
   const [scoreBump, setScoreBump] = useState(false);
   const [screenFlash, setScreenFlash] = useState(null);
   const [elapsed, setElapsed] = useState(0);
+  const [isGuessing, setIsGuessing] = useState(false);
 
   const isTouchDevice = useRef('ontouchstart' in window || navigator.maxTouchPoints > 0);
   const [needsAudioUnlock, setNeedsAudioUnlock] = useState(isTouchDevice.current);
@@ -91,11 +92,11 @@ export default function GamePage({
 
   const shuffledAllTracksRef = useRef(null);
   const searchIndexRef = useRef(null);
-  const artistIndexRef = useRef(null); // distinct individual artists for artist mode
+  const artistIndexRef = useRef(null);
   const debounceRef = useRef(null);
   const sessionIdRef = useRef(null);
-  const sessionStartedRef = useRef(false); // guard: start exactly once
-  const guessBusyRef = useRef(false);      // guard: one in-flight guess at a time
+  const sessionStartedRef = useRef(false);
+  const guessBusyRef = useRef(false);
 
   useEffect(() => {
     const map = {};
@@ -375,6 +376,12 @@ export default function GamePage({
       if (res.data.done) {
         showBadges(res.data);
         revealTrack(false, 0, newHistory, null, res.data.reveal);
+
+        // Prefetch next round's audio after skip completes the round
+        const nextRoundIndex = currentIndex + 1;
+        if (nextRoundIndex < totalRounds) {
+          loadAudio(clipUrl(nextRoundIndex));
+        }
       } else {
         setClipStage(res.data.stage);
         playClip(startPosRef.current, CLIP_DURATIONS[res.data.stage]);
@@ -403,12 +410,20 @@ export default function GamePage({
   };
 
   const handleGuessItem = async (item) => {
-    if (phase !== 'playing') return;
+    if (phase !== 'playing' || guessBusyRef.current) return;
+    guessBusyRef.current = true;
+    setIsGuessing(true);
     stop();
 
     setHasGuessed(true);
     const displayText = guessMode === 'artist' ? item.artistName || item.artist : item.name;
     const guessStage = clipStage;
+
+    // Clear input immediately for responsive feel
+    setGuessQuery('');
+    setShowDropdown(false);
+    if (inputRef.current) inputRef.current.value = '';
+    clearTimeout(debounceRef.current);
 
     try {
       const res = await postGuess(
@@ -434,6 +449,12 @@ export default function GamePage({
           guessElapsed: data.elapsed_seconds,
           multiplier: data.multiplier || 1.0,
         }, data.reveal);
+
+        // Prefetch next round's audio after correct guess
+        const nextRoundIndex = currentIndex + 1;
+        if (nextRoundIndex < totalRounds) {
+          loadAudio(clipUrl(nextRoundIndex));
+        }
       } else {
         triggerFlash('red');
         setShaking(true);
@@ -446,6 +467,12 @@ export default function GamePage({
         if (data.done) {
           showBadges(data);
           revealTrack(false, 0, newHistory, null, data.reveal);
+
+          // Prefetch next round's audio after final wrong guess (round complete)
+          const nextRoundIndex = currentIndex + 1;
+          if (nextRoundIndex < totalRounds) {
+            loadAudio(clipUrl(nextRoundIndex));
+          }
         } else {
           setClipStage(data.stage);
           setTimeout(() => {
@@ -460,12 +487,8 @@ export default function GamePage({
       }
     } finally {
       guessBusyRef.current = false;
+      setIsGuessing(false);
     }
-
-    setGuessQuery('');
-    setShowDropdown(false);
-    if (inputRef.current) inputRef.current.value = '';
-    clearTimeout(debounceRef.current);
   };
 
   const handleGuess = (track) => handleGuessItem(track);
@@ -952,25 +975,35 @@ export default function GamePage({
               <input
                 ref={inputRef}
                 type="text"
-                defaultValue={guessQuery}
+                value={guessQuery}
                 onChange={(e) => {
                   const val = e.target.value;
+                  // Synchronous local state for immediate text entry & cursor behavior
+                  setGuessQuery(val);
+                  // Debounce only the dropdown filtering
                   clearTimeout(debounceRef.current);
                   debounceRef.current = setTimeout(() => {
-                    setGuessQuery(val);
                     setShowDropdown(val.length > 0);
                   }, 120);
                 }}
                 onFocus={() => guessQuery.length > 0 && setShowDropdown(true)}
-                placeholder={guessMode === 'artist' ? t('game.typeArtist') : t('game.typeGuess')}
-                disabled={phase !== 'playing'}
+                placeholder={isGuessing ? t('game.checking') : (guessMode === 'artist' ? t('game.typeArtist') : t('game.typeGuess'))}
+                disabled={phase !== 'playing' || isGuessing}
                 className="w-full px-4 py-3 text-sm font-body rounded-sm outline-none transition-colors"
                 style={{
                   backgroundColor: 'var(--color-surface)',
                   border: '1px solid var(--color-border)',
                   color: 'var(--color-text)',
+                  opacity: isGuessing ? 0.6 : 1,
                 }}
               />
+
+              {isGuessing && (
+                <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2 text-xs font-mono" style={{ color: 'var(--color-neon)' }}>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span>{t('game.checking')}</span>
+                </div>
+              )}
 
               {}
               {showDropdown && filteredItems.length > 0 && (

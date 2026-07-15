@@ -90,6 +90,7 @@ const hi = {
     audioError: 'ऑडियो त्रुटि',
     typeGuess: 'अपना अनुमान टाइप करें...',
     typeArtist: 'कलाकार का नाम टाइप करें...',
+    checking: 'जाँच रहे हैं...',
     skip: 'छोड़ें',
     timePressure: 'समय दबाव',
     nextSong: 'अगला गाना',
