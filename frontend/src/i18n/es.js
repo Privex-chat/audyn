@@ -90,6 +90,7 @@ const es = {
     audioError: 'ERROR DE AUDIO',
     typeGuess: 'Escribe tu respuesta...',
     typeArtist: 'Escribe el nombre del artista...',
+    checking: 'Comprobando...',
     skip: 'Saltar',
     timePressure: 'Presión de tiempo',
     nextSong: 'SIGUIENTE CANCIÓN',
