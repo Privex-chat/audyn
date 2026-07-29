@@ -52,6 +52,8 @@ const hi = {
     challengeFriend: '⚔️ दोस्त को चुनौती दें',
     changePlaylist: 'प्लेलिस्ट बदलें',
     playableTracks: '{count} बजाने योग्य ट्रैक',
+    playableOfTotal: '{total} में से {playable} ट्रैक बजाने योग्य',
+    allGuessable: 'सभी {total} अनुमान सूची में हैं',
     loadingPreviews: 'प्रीव्यू लोड हो रहे हैं…',
     back: 'वापस',
     backToPlaylist: 'प्लेलिस्ट चयन पर वापस जाएं',

@@ -52,6 +52,8 @@ const es = {
     challengeFriend: '⚔️ Desafiar a un amigo',
     changePlaylist: 'Cambiar playlist',
     playableTracks: '{count} pistas reproducibles',
+    playableOfTotal: '{playable} de {total} pistas reproducibles',
+    allGuessable: 'Las {total} están en la lista de respuestas',
     loadingPreviews: 'Cargando fragmentos…',
     back: 'Atrás',
     backToPlaylist: 'Volver a selección de playlist',

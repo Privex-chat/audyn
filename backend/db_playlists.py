@@ -1,6 +1,7 @@
 import logging
 from datetime import datetime, timezone, timedelta
 from database import get_conn
+from preview_store import MAX_PREVIEW_RETRIES
 
 logger = logging.getLogger(__name__)
 
@@ -10,7 +11,14 @@ async def load_playlist(playlist_id: str) -> dict | None:
     """
     Load a cached playlist + its tracks from PostgreSQL.
     Returns None if not found or expired (older than PLAYLIST_TTL_DAYS).
-    Only returns tracks that have a non-empty preview_url.
+
+    Returns EVERY track linked to the playlist. That list is the client's
+    guess-autocomplete pool, and it is deliberately decoupled from whether a
+    track can be *heard* — a separate question /sessions/start answers against
+    live DB state. Filtering the pool down to playable tracks here made any
+    track whose preview arrived after the client's fetch impossible to type;
+    see issue #22. Playability is returned as counts only (total_tracks /
+    pending_preview_retry), never per track.
     """
     async with get_conn() as conn:
         row = await conn.fetchrow(
@@ -41,30 +49,35 @@ async def load_playlist(playlist_id: str) -> dict | None:
                 t.track_id AS id,
                 t.name,
                 t.artist,
-                t.preview_url,
                 t.album_name,
+                t.album_image,
                 t.duration_ms,
                 t.explicit,
-                t.popularity
+                t.popularity,
+                (t.preview_url IS NOT NULL AND t.preview_url != '') AS playable,
+                t.preview_unavailable,
+                t.preview_retry_count
             FROM playlist_tracks pt
             JOIN tracks t ON t.track_id = pt.track_id
             WHERE pt.playlist_id = $1
-              AND t.preview_url IS NOT NULL
-              AND t.preview_url != ''
             ORDER BY pt.position
         """, playlist_id)
 
+        # No links at all means the save never landed — report a miss so the
+        # caller re-fetches from Spotify.
         if not tracks:
             return None
 
+        # Neither preview_url nor per-track playability is returned — both would
+        # help a client narrow the answer down. See server._public_track, whose
+        # shape this mirrors. Playability is reported as counts only.
         track_list = [
             {
                 "id": r["id"],
                 "name": r["name"],
                 "artist": r["artist"],
-                "preview_url": r["preview_url"],
                 "album_name": r["album_name"],
-                "album_image": "",  # loaded on demand via /tracks/art
+                "album_image": r["album_image"] or "",
                 "duration_ms": r["duration_ms"] or 0,
                 "explicit": r["explicit"] or False,
                 "popularity": r["popularity"] or 0,
@@ -72,16 +85,31 @@ async def load_playlist(playlist_id: str) -> dict | None:
             for r in tracks
         ]
 
-        logger.info(f"Loaded playlist '{row['name']}' from DB: {len(track_list)} tracks")
+        playable_count = sum(1 for r in tracks if r["playable"])
+        # Exact pending count off the same rows — no extra query, and no
+        # total-minus-playable-minus-skipped arithmetic that can go negative.
+        pending_count = sum(
+            1 for r in tracks
+            if not r["playable"]
+            and not r["preview_unavailable"]
+            and (r["preview_retry_count"] or 0) < MAX_PREVIEW_RETRIES
+        )
+
+        logger.info(
+            f"Loaded playlist '{row['name']}' from DB: {len(track_list)} tracks "
+            f"({playable_count} playable, {pending_count} awaiting preview)"
+        )
 
         return {
             "playlist_id": playlist_id,
             "name": row["name"],
             "image": row["image_url"],
             "tracks": track_list,
-            "total_tracks": len(track_list),
+            "total_tracks": playable_count,
+            "pool_size": len(track_list),
             "total_in_playlist": row["total_in_playlist"],
             "skipped_no_preview": row["skipped_no_preview"],
+            "pending_preview_retry": pending_count,
             "fetch_complete": bool(is_complete),
             "source": "database",
         }
@@ -243,8 +271,15 @@ async def save_album_art_to_db(art_updates: dict[str, str]):
         return
 
     async with get_conn() as conn:
-        for track_id, url in art_updates.items():
-            await conn.execute(
-                "UPDATE tracks SET album_image = $1, updated_at = NOW() WHERE track_id = $2",
-                url, track_id,
-            )
+        await conn.execute(
+            """
+            UPDATE tracks t
+            SET album_image = u.url,
+                updated_at  = NOW()
+            FROM unnest($1::text[], $2::text[]) AS u(track_id, url)
+            WHERE t.track_id = u.track_id
+              AND u.url != ''
+            """,
+            list(art_updates.keys()),
+            list(art_updates.values()),
+        )

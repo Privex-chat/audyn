@@ -52,6 +52,8 @@ const ko = {
       challengeFriend: '⚔️ 친구에게 도전',
       changePlaylist: '플레이리스트 변경',
       playableTracks: '재생 가능 트랙 {count}개',
+      playableOfTotal: '{total}개 중 {playable}개 재생 가능',
+      allGuessable: '{total}개 모두 정답 목록에 있습니다',
       beatScore: '⚔️ {username}의 점수 {score}를 이겨보세요!',
 
       announcement: {

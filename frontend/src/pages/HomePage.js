@@ -175,18 +175,24 @@ export default function HomePage({
   // lightweight status endpoint so the playable count climbs live, then
   // re-fetch the full track list once it settles. Keyed on playlist_id so it
   // runs once per loaded playlist.
+  //
+  // This used to bail out on `fetch_complete === true`, which conflated "we have
+  // the whole track list" with "every preview resolved" — two different things.
+  // A 946-track playlist arrives complete with ~96 previews, so the progress bar
+  // never appeared and the pre-start refresh never ran (issue #22). The API now
+  // reports the exact number of previews still queued, so key off that instead
+  // of inferring it from counts that don't line up on very large playlists.
   useEffect(() => {
     const pid = playlistInfo?.playlist_id;
-    const total = playlistInfo?.total_in_playlist || 0;
-    const playable = playlistInfo?.total_tracks || 0;
-    if (!pid || total === 0 || playlistInfo?.fetch_complete === true || playable >= total) {
+    const pending = playlistInfo?.pending_preview_retry ?? 0;
+    if (!pid || pending <= 0) {
       setFillStatus(null);
       return;
     }
 
     let cancelled = false;
     let timer = null;
-    let lastPlayable = playable;
+    let lastPlayable = playlistInfo?.total_tracks || 0;
     let stable = 0;
 
     const refreshFull = async () => {
@@ -311,6 +317,13 @@ export default function HomePage({
       mode: 'create',
     });
   };
+
+  // Size of the guess pool: every track we hold for this playlist, playable or
+  // not. `total_tracks` is the playable subset — only those can be a round.
+  // Falls back to the array length for a response cached before pool_size existed.
+  const poolSize = playlistInfo
+    ? (playlistInfo.pool_size ?? playlistInfo.tracks?.length ?? 0)
+    : 0;
 
   const diffModes = [
     { key: 'easy', label: t('home.easy'), desc: t('home.easyDesc'), color: '#22C55E' },
@@ -597,6 +610,24 @@ return (
                           }}
                         />
                       </div>
+                    </div>
+                  ) : poolSize > playlistInfo.total_tracks ? (
+                    // Some tracks have no Spotify preview, so they can't be a
+                    // round — but they ARE in the guess list, so say both
+                    // instead of leaving "588 tracks" looking like data loss.
+                    // Counts are against the pool we actually hold, never
+                    // Spotify's stated total (which can exceed it on playlists
+                    // past the fetch cap) — don't promise tracks we don't have.
+                    <div className="mt-1">
+                      <p className="font-mono text-xs" style={{ color: 'var(--color-text-muted)' }}>
+                        {t('home.playableOfTotal', {
+                          playable: playlistInfo.total_tracks,
+                          total: poolSize,
+                        })}
+                      </p>
+                      <p className="font-mono text-[10px] mt-0.5" style={{ color: 'var(--color-text-dim)' }}>
+                        {t('home.allGuessable', { total: poolSize })}
+                      </p>
                     </div>
                   ) : (
                     <p className="font-mono text-xs mt-1" style={{ color: 'var(--color-text-muted)' }}>

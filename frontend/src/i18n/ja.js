@@ -52,6 +52,8 @@ const ja = {
     challengeFriend: '⚔️ フレンドに挑戦',
     changePlaylist: 'プレイリストを変更',
     playableTracks: '再生可能: {count}トラック',
+    playableOfTotal: '再生可能: {total}トラック中{playable}',
+    allGuessable: '{total}曲すべてが解答候補に含まれます',
     loadingPreviews: 'プレビューを読み込み中…',
     back: '戻る',
     backToPlaylist: 'プレイリスト選択に戻る',
