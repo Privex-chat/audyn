@@ -169,6 +169,27 @@ def parse_embed_next_data(html: str) -> dict:
     except json.JSONDecodeError:
         return {}
 
+# Path from an embed payload's root to the node describing the track/playlist.
+_EMBED_ENTITY_PATH = ("props", "pageProps", "state", "data", "entity")
+
+def _embed_entity(next_data) -> dict:
+    """Walk an embed payload to its entity node. Always returns a dict.
+
+    This is third-party HTML we don't control, and a plain `.get(k, {})` chain is
+    not safe on it: the default only applies when a key is MISSING, so an
+    explicit `"props": null` yields None and the next `.get` raises
+    AttributeError. json.loads can also return a non-dict (`null`, `[]`, a bare
+    string) for a well-formed but unexpected payload. Check the type at every
+    hop instead — a scrape that raises here costs far more than one bad track,
+    see _run_preview_fill.
+    """
+    node = next_data
+    for key in _EMBED_ENTITY_PATH:
+        if not isinstance(node, dict):
+            return {}
+        node = node.get(key)
+    return node if isinstance(node, dict) else {}
+
 def _public_track(t: dict) -> dict:
     """Strip a DB-bound track dict down to what the client needs.
 
@@ -639,11 +660,17 @@ def _start_preview_fill(playlist_id: str):
     task.add_done_callback(lambda _t: _preview_fill_tasks.pop(playlist_id, None))
 
 def _extract_cover_art(entity: dict) -> str:
-    """Pick a ~200–400px cover from an embed entity's coverArt sources."""
+    """Pick a ~200-400px cover from an embed entity's coverArt sources.
+
+    `or {}` / `or []` rather than a .get default: a null value in the payload
+    would otherwise flow through and raise on the next access.
+    """
     art_url = ""
-    for src in entity.get("coverArt", {}).get("sources", []):
+    for src in (entity.get("coverArt") or {}).get("sources") or []:
+        if not isinstance(src, dict):
+            continue
         art_url = src.get("url", "") or art_url
-        if 200 <= src.get("width", 0) <= 400:
+        if 200 <= (src.get("width") or 0) <= 400:
             break
     return art_url
 
@@ -669,13 +696,17 @@ async def _scrape_one_preview(http, tid: str):
             return ("unavail", tid, "", "")
         if resp.status_code != 200:
             return ("fail", tid, "", "")
-        entity = (
-            parse_embed_next_data(resp.text)
-            .get("props", {}).get("pageProps", {})
-            .get("state", {}).get("data", {}).get("entity", {})
-        )
-        url = (entity.get("audioPreview") or {}).get("url", "")
-        art = _extract_cover_art(entity)
+        try:
+            entity = _embed_entity(parse_embed_next_data(resp.text))
+            url = (entity.get("audioPreview") or {}).get("url", "")
+            art = _extract_cover_art(entity)
+        except Exception as exc:
+            # Keep this function total. It runs inside an asyncio.gather fan-out,
+            # so anything raised here would discard the whole chunk's results —
+            # including the retry-counter bookkeeping that stops a bad track from
+            # stalling the same playlist on every future fill.
+            logger.warning(f"Preview fill: unreadable embed payload for {tid}: {exc}")
+            return ("fail", tid, "", "")
         return ("ok" if url else "fail", tid, url, art)
 
 async def _run_preview_fill(playlist_id: str):
@@ -695,7 +726,21 @@ async def _run_preview_fill(playlist_id: str):
             # this is what lets the frontend watch the playable count climb.
             for i in range(0, len(track_ids), PREVIEW_FILL_CHUNK):
                 chunk = track_ids[i : i + PREVIEW_FILL_CHUNK]
-                results = await asyncio.gather(*(_scrape_one_preview(http, t) for t in chunk))
+                # return_exceptions so one track can never discard the whole
+                # chunk's results. _scrape_one_preview is written to be total, but
+                # this fan-out is the point where a single raise would lose every
+                # sibling's bookkeeping — and an un-advanced retry counter stalls
+                # the same playlist on every future fill. Cheap structural guard.
+                settled = await asyncio.gather(
+                    *(_scrape_one_preview(http, t) for t in chunk),
+                    return_exceptions=True,
+                )
+                results = []
+                for r in settled:
+                    if isinstance(r, BaseException):
+                        logger.warning(f"Preview fill: scrape task failed for {playlist_id}: {r}")
+                    else:
+                        results.append(r)
 
                 recovered = {tid: url for (s, tid, url, _a) in results if s == "ok"}
                 unavailable = [tid for (s, tid, _u, _a) in results if s == "unavail"]
@@ -1101,6 +1146,9 @@ async def playlist_status(playlist_id: str):
             """,
             actual_id,
         )
+        # Same retry cap as load_playlist's pending_preview_retry — the client
+        # starts polling off that number and reads progress off this one, so a
+        # drift between them would leave the progress bar unable to finish.
         pending = await conn.fetchval(
             """
             SELECT COUNT(*) FROM playlist_tracks pt
@@ -1108,9 +1156,10 @@ async def playlist_status(playlist_id: str):
             WHERE pt.playlist_id = $1
               AND (t.preview_url IS NULL OR t.preview_url = '')
               AND t.preview_unavailable = FALSE
-              AND t.preview_retry_count < 5
+              AND t.preview_retry_count < $2
             """,
             actual_id,
+            MAX_PREVIEW_RETRIES,
         )
     return {
         "exists": True,
@@ -1167,9 +1216,10 @@ async def wait_for_previews(playlist_id: str, min_tracks: int = 1, timeout: int 
                 WHERE pt.playlist_id = $1
                   AND (t.preview_url IS NULL OR t.preview_url = '')
                   AND t.preview_unavailable = FALSE
-                  AND t.preview_retry_count < 5
+                  AND t.preview_retry_count < $2
                 """,
                 actual_id,
+                MAX_PREVIEW_RETRIES,
             )
 
         playable = playable or 0
@@ -1308,3 +1358,52 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
+
+
+if __name__ == "__main__":
+    # Self-check for the pure helpers: python server.py
+    # (the app is served by uvicorn, which imports the module and never runs this)
+    #
+    # The embed payload is third-party HTML. A `.get(k, {})` chain over it is not
+    # safe, because the default only applies to a MISSING key — an explicit null
+    # yields None and the next .get raises. Anything raised while scraping is
+    # expensive: it happens inside an asyncio.gather fan-out, so it would discard
+    # the whole chunk's retry bookkeeping and let one bad track stall a
+    # playlist's preview fill indefinitely.
+    _ok = '{"props":{"pageProps":{"state":{"data":{"entity":{"audioPreview":{"url":"u"},'\
+          '"coverArt":{"sources":[{"url":"a300","width":300}]}}}}}}}'
+    assert _embed_entity(parse_embed_next_data(
+        f'<script id="__NEXT_DATA__" type="application/json">{_ok}</script>'
+    ))["audioPreview"]["url"] == "u"
+
+    # Every shape that used to raise AttributeError must now yield {}.
+    for _raw in (
+        "null", "[]", '"unexpected"', "42", "true",
+        '{"props":null}',
+        '{"props":{"pageProps":{"state":null}}}',
+        '{"props":{"pageProps":{"state":{"data":{"entity":null}}}}}',
+        '{"props":{"pageProps":{"state":{"data":{"entity":[]}}}}}',
+        "{}",
+    ):
+        assert _embed_entity(json.loads(_raw)) == {}, _raw
+    assert _embed_entity(None) == {}
+    # No __NEXT_DATA__ block at all, and malformed JSON inside one.
+    assert parse_embed_next_data("<html>nope</html>") == {}
+    assert _embed_entity(parse_embed_next_data(
+        '<script id="__NEXT_DATA__" type="application/json">{not json</script>'
+    )) == {}
+
+    # Cover art: null coverArt/sources and junk entries must not raise.
+    assert _extract_cover_art({}) == ""
+    assert _extract_cover_art({"coverArt": None}) == ""
+    assert _extract_cover_art({"coverArt": {"sources": None}}) == ""
+    assert _extract_cover_art({"coverArt": {"sources": [None, "junk"]}}) == ""
+    assert _extract_cover_art(
+        {"coverArt": {"sources": [{"url": "a64", "width": 64}, {"url": "a300", "width": 300}]}}
+    ) == "a300"
+    # Falls back to the last usable url when nothing is in the 200-400 range.
+    assert _extract_cover_art(
+        {"coverArt": {"sources": [{"url": "a64", "width": 64}, {"url": None, "width": 640}]}}
+    ) == "a64"
+
+    print("server.py self-check passed")
