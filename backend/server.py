@@ -169,6 +169,27 @@ def parse_embed_next_data(html: str) -> dict:
     except json.JSONDecodeError:
         return {}
 
+def _public_track(t: dict) -> dict:
+    """Strip a DB-bound track dict down to what the client needs.
+
+    Mirrors the shape db_playlists.load_playlist returns. Two deliberate
+    omissions, both of which would help a client narrow down the answer:
+      - preview_url: the CDN URL identifies a clip by comparing bytes.
+      - per-track playability: only tracks with a preview can be a round, so
+        flagging them would let a client filter the pool down to candidates.
+        Playability is reported as aggregate counts only.
+    """
+    return {
+        "id": t["id"],
+        "name": t["name"],
+        "artist": t["artist"],
+        "album_name": t.get("album_name", ""),
+        "album_image": t.get("album_image", "") or "",
+        "duration_ms": t.get("duration_ms", 0) or 0,
+        "explicit": bool(t.get("explicit", False)),
+        "popularity": t.get("popularity", 0) or 0,
+    }
+
 @asynccontextmanager
 async def lifespan(app):
     global _audio_http_client
@@ -213,81 +234,35 @@ app = FastAPI(
 api_router = APIRouter(prefix="/api")
 
 async def fetch_album_art_for_tracks(track_ids: list[str]) -> dict[str, str]:
-    """Fetch album art URLs for specific tracks. Memory cache → DB → Spotify embed."""
+    """Look up album art for specific tracks. Memory cache → DB. No scraping.
+
+    Art is decorative (dropdown thumbnails), and this is called for the whole
+    autocomplete pool — scraping the misses here meant ~one Spotify embed
+    request per track in the playlist, competing with the preview fill for the
+    same endpoint and inviting the 429 that stalls previews. The fill now
+    harvests cover art from the embed page it already loads, so a miss just
+    means "not fetched yet" and resolves on its own.
+    """
     results = {}
-    ids_to_fetch = []
+    cache_misses = []
 
     for tid in track_ids:
         cached = art_cache.get(f"art:{tid}")
         if cached is not None:
             results[tid] = cached
         else:
-            ids_to_fetch.append(tid)
+            cache_misses.append(tid)
 
-    if not ids_to_fetch:
+    if not cache_misses:
         return results
 
     try:
-        db_art = await get_album_art_from_db(ids_to_fetch)
+        db_art = await get_album_art_from_db(cache_misses)
         for tid, url in db_art.items():
             results[tid] = url
             art_cache.set(f"art:{tid}", url)
-        ids_to_fetch = [tid for tid in ids_to_fetch if tid not in db_art]
     except Exception as e:
         logger.warning(f"DB art lookup failed: {e}")
-
-    if not ids_to_fetch:
-        return results
-
-    semaphore = asyncio.Semaphore(10)
-
-    async def fetch_one(http, tid):
-        async with semaphore:
-            try:
-                resp = await http.get(
-                    f"https://open.spotify.com/embed/track/{tid}",
-                    headers=BROWSER_HEADERS,
-                )
-                if resp.status_code != 200:
-                    return tid, ""
-                data = parse_embed_next_data(resp.text)
-                entity = (
-                    data.get("props", {})
-                    .get("pageProps", {})
-                    .get("state", {})
-                    .get("data", {})
-                    .get("entity", {})
-                )
-                cover = entity.get("coverArt", {}).get("sources", [])
-                art_url = ""
-                for src in cover:
-                    art_url = src.get("url", "")
-                    w = src.get("width", 0)
-                    if 200 <= w <= 400:
-                        break
-                return tid, art_url
-            except Exception:
-                return tid, ""
-
-    async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as http:
-        tasks = [fetch_one(http, tid) for tid in ids_to_fetch]
-        completed = await asyncio.gather(*tasks, return_exceptions=True)
-
-    art_updates = {}
-    for result_item in completed:
-        if isinstance(result_item, Exception):
-            continue
-        tid, art_url = result_item
-        if art_url:
-            results[tid] = art_url
-            art_cache.set(f"art:{tid}", art_url)
-            art_updates[tid] = art_url
-
-    if art_updates:
-        try:
-            await save_album_art_to_db(art_updates)
-        except Exception:
-            pass
 
     return results
 
@@ -574,10 +549,10 @@ async def fetch_playlist_embed_only(http, playlist_id, known_total: int = 0):
         total_stated = len(track_list)
         embed_truncated = False
 
-    # FIX: build two separate lists so that all playable tracks (even those
-    # without a preview URL) are persisted to the DB for the worker to retry,
-    # while only tracks with a preview URL are returned to the user.
-    tracks = []          # user-facing: preview URL required
+    # tracks_for_db carries every playable track (preview URL or not) so the
+    # worker can retry the ones still missing audio; the user-facing pool is the
+    # same set, flagged by playability, so a preview arriving later never makes a
+    # track unguessable (issue #22).
     tracks_for_db = []   # all playable tracks, preview_url may be ""
 
     for t in track_list:
@@ -593,7 +568,7 @@ async def fetch_playlist_embed_only(http, playlist_id, known_total: int = 0):
         if uri.startswith("spotify:track:"):
             track_id = uri.split(":")[-1]
 
-        track_obj = {
+        tracks_for_db.append({
             "id": track_id or t.get("uid", ""),
             "name": t.get("title", "Unknown Track"),
             "artist": clean_whitespace(t.get("subtitle", "Unknown Artist")),
@@ -603,13 +578,13 @@ async def fetch_playlist_embed_only(http, playlist_id, known_total: int = 0):
             "duration_ms": 0,
             "explicit": False,
             "popularity": 0,
-        }
-        tracks_for_db.append(track_obj)
-        if url:
-            tracks.append(track_obj)
+        })
+
+    tracks = [_public_track(t) for t in tracks_for_db]
+    playable_now = sum(1 for t in tracks_for_db if t["preview_url"])
 
     # Count tracks that are playable but have no preview yet (queued for retry)
-    pending_retry = len(tracks_for_db) - len(tracks)
+    pending_retry = len(tracks_for_db) - playable_now
     # Count tracks that are not playable at all (local files, region-locked)
     skipped = sum(1 for t in track_list if not t.get("isPlayable", False))
 
@@ -625,7 +600,8 @@ async def fetch_playlist_embed_only(http, playlist_id, known_total: int = 0):
         "image": playlist_image,
         "tracks": tracks,
         "tracks_for_db": tracks_for_db,
-        "total_tracks": len(tracks),
+        "total_tracks": playable_now,
+        "pool_size": len(tracks),
         "total_in_playlist": total_stated,
         "skipped_no_preview": skipped,
         "pending_preview_retry": pending_retry,
@@ -662,9 +638,23 @@ def _start_preview_fill(playlist_id: str):
     _preview_fill_tasks[playlist_id] = task
     task.add_done_callback(lambda _t: _preview_fill_tasks.pop(playlist_id, None))
 
+def _extract_cover_art(entity: dict) -> str:
+    """Pick a ~200–400px cover from an embed entity's coverArt sources."""
+    art_url = ""
+    for src in entity.get("coverArt", {}).get("sources", []):
+        art_url = src.get("url", "") or art_url
+        if 200 <= src.get("width", 0) <= 400:
+            break
+    return art_url
+
 async def _scrape_one_preview(http, tid: str):
     """Scrape a single track's preview from its embed page.
-    Returns (status, tid, url): status in {ok, unavail, fail, 429}."""
+
+    Returns (status, tid, url, art): status in {ok, unavail, fail, 429}.
+    The embed page carries the cover art too, so it comes back on any 200 even
+    when there's no preview — that backfill is what lets /tracks/art stay a
+    pure DB read instead of running a second army of scrapes.
+    """
     async with _preview_fill_semaphore:
         try:
             resp = await http.get(
@@ -672,20 +662,21 @@ async def _scrape_one_preview(http, tid: str):
                 headers=BROWSER_HEADERS,
             )
         except Exception:
-            return ("fail", tid, "")
+            return ("fail", tid, "", "")
         if resp.status_code == 429:
-            return ("429", tid, "")
+            return ("429", tid, "", "")
         if resp.status_code == 404:
-            return ("unavail", tid, "")
+            return ("unavail", tid, "", "")
         if resp.status_code != 200:
-            return ("fail", tid, "")
+            return ("fail", tid, "", "")
         entity = (
             parse_embed_next_data(resp.text)
             .get("props", {}).get("pageProps", {})
             .get("state", {}).get("data", {}).get("entity", {})
         )
         url = (entity.get("audioPreview") or {}).get("url", "")
-        return ("ok", tid, url) if url else ("fail", tid, "")
+        art = _extract_cover_art(entity)
+        return ("ok" if url else "fail", tid, url, art)
 
 async def _run_preview_fill(playlist_id: str):
     try:
@@ -706,16 +697,23 @@ async def _run_preview_fill(playlist_id: str):
                 chunk = track_ids[i : i + PREVIEW_FILL_CHUNK]
                 results = await asyncio.gather(*(_scrape_one_preview(http, t) for t in chunk))
 
-                recovered = {tid: url for (s, tid, url) in results if s == "ok"}
-                unavailable = [tid for (s, tid, _) in results if s == "unavail"]
-                failed = [tid for (s, tid, _) in results if s == "fail"]
-                aborted = any(s == "429" for (s, _, _) in results)
+                recovered = {tid: url for (s, tid, url, _a) in results if s == "ok"}
+                unavailable = [tid for (s, tid, _u, _a) in results if s == "unavail"]
+                failed = [tid for (s, tid, _u, _a) in results if s == "fail"]
+                art = {tid: a for (_s, tid, _u, a) in results if a}
+                aborted = any(s == "429" for (s, _t, _u, _a) in results)
 
                 await mark_recovered(recovered)
                 await mark_unavailable(unavailable)
                 await mark_failed(failed)
+                try:
+                    await save_album_art_to_db(art)
+                except Exception as e:
+                    logger.warning(f"Art backfill failed for {playlist_id}: {e}")
                 for tid, url in recovered.items():
                     preview_cache.set(f"preview:{tid}", url)
+                for tid, url in art.items():
+                    art_cache.set(f"art:{tid}", url)
                 if recovered:
                     total_recovered += len(recovered)
                     memory_cache.delete(playlist_id)  # next /playlist read sees the growth
@@ -738,9 +736,14 @@ async def _run_preview_fill(playlist_id: str):
 _playlist_fetches: dict[str, asyncio.Task] = {}
 
 async def _finalize_and_save(playlist_id: str, result: dict, tracks_for_db: list) -> dict:
-    """Persist a fetch result, then serve whichever view is larger: this fetch
-    or the DB (which may hold worker-recovered previews and links preserved
-    across a degraded fetch)."""
+    """Persist a fetch result, then serve the DB view of it.
+
+    The DB is a superset of what we just wrote: save_playlist preserves links
+    from a previous larger fetch and CASE-guards preview URLs the worker
+    recovered. Reading it back means there is exactly one builder for the
+    user-facing pool (load_playlist), so the pool can't differ depending on
+    which path served the request.
+    """
     save_result = dict(result)
     save_result["tracks"] = tracks_for_db
     try:
@@ -753,20 +756,16 @@ async def _finalize_and_save(playlist_id: str, result: dict, tracks_for_db: list
 
     try:
         db_result = await load_playlist_from_db(playlist_id)
-        if db_result and db_result["total_tracks"] > result["total_tracks"]:
-            total = result.get("total_in_playlist") or db_result.get("total_in_playlist") or 0
-            skipped = db_result.get("skipped_no_preview") or 0
-            db_result["pending_preview_retry"] = max(
-                0, total - db_result["total_tracks"] - skipped
-            )
-            logger.info(
-                f"Serving merged DB view for {playlist_id}: "
-                f"{db_result['total_tracks']} tracks (fetch returned {result['total_tracks']})"
-            )
+        if db_result:
+            if db_result["pool_size"] != result["pool_size"]:
+                logger.info(
+                    f"Serving DB view for {playlist_id}: {db_result['pool_size']} tracks "
+                    f"in pool (this fetch returned {result['pool_size']})"
+                )
             memory_cache.set(playlist_id, db_result)
             return db_result
     except Exception as e:
-        logger.warning(f"DB merge after save failed: {e}")
+        logger.warning(f"DB read-back after save failed: {e}")
 
     memory_cache.set(playlist_id, result)
     return result
@@ -884,36 +883,6 @@ async def _fetch_playlist_from_spotify(playlist_id: str) -> dict:
                 f"— queued for hourly retry worker (not blocking user response)"
             )
 
-        tracks = []
-        for tid in track_ids:
-            preview_url = embed_previews.get(tid, "")
-            if not preview_url:
-                continue
-            if not is_playable.get(tid, True):
-                continue
-            m = meta_by_id[tid]
-            tracks.append(
-                {
-                    "id": tid,
-                    "name": m["name"],
-                    "artist": m["artist"],
-                    "preview_url": preview_url,
-                    "album_image": "",
-                    "album_name": m["album_name"],
-                    "duration_ms": m.get("duration_ms", 0),
-                    "explicit": m.get("explicit", False),
-                    "popularity": m.get("popularity", 0),
-                }
-            )
-
-        truly_skipped = sum(1 for tid in track_ids if not is_playable.get(tid, True))
-        pending_retry = len(ids_without_preview)
-        skipped = max(0, truly_skipped)
-        logger.info(
-            f"Final: {len(tracks)} playable now / {total_in_playlist} total "
-            f"({skipped} not playable, {pending_retry} queued for preview retry)"
-        )
-
         tracks_for_db = []
         for tid in track_ids:
             if not is_playable.get(tid, True):
@@ -931,11 +900,26 @@ async def _fetch_playlist_from_spotify(playlist_id: str) -> dict:
                 "popularity": m.get("popularity", 0),
             })
 
+        # User-facing pool = every track in the playlist, flagged by playability.
+        # Same shape load_playlist returns, so the client sees one pool whether
+        # this response came from Spotify or the DB cache (issue #22).
+        tracks = [_public_track(t) for t in tracks_for_db]
+
+        truly_skipped = sum(1 for tid in track_ids if not is_playable.get(tid, True))
+        pending_retry = len(ids_without_preview)
+        skipped = max(0, truly_skipped)
+        playable_now = sum(1 for t in tracks_for_db if t["preview_url"])
+        logger.info(
+            f"Final: {playable_now} playable now / {total_in_playlist} total "
+            f"({skipped} not playable, {pending_retry} queued for preview retry)"
+        )
+
         result = {
             "name": playlist_name,
             "image": playlist_image,
             "tracks": tracks,
-            "total_tracks": len(tracks),
+            "total_tracks": playable_now,
+            "pool_size": len(tracks),
             "total_in_playlist": total_in_playlist,
             "skipped_no_preview": skipped,
             "pending_preview_retry": pending_retry,
@@ -1250,10 +1234,12 @@ async def get_playlist(
             )
         if skipped > 0:
             parts.append(
-                f"{skipped} tracks have no audio preview on Spotify and were permanently skipped."
+                f"{skipped} tracks have no audio preview on Spotify and can't be played."
             )
+        # Every track is guessable regardless — the whole playlist is in the
+        # autocomplete pool; playable only limits which ones can be a round.
         result["warning"] = (
-            f"{result['total_tracks']} of {result['total_in_playlist']} tracks are playable right now. "
+            f"{result['total_tracks']} of {result['total_in_playlist']} tracks can be played right now. "
             + " ".join(parts)
         )
 

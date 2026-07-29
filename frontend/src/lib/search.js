@@ -45,6 +45,24 @@ export function matchesQuery(normHaystack, normQuery) {
   return normQuery.split(' ').every((tok) => tok && normHaystack.includes(tok));
 }
 
+// How good a match is, so the dropdown can show the BEST few rather than the
+// first few it happens to walk past. The pool is the whole playlist (hundreds
+// of tracks) and only ~7 rows fit, so without ranking an exact title like "ADN"
+// loses its slot to whatever incidentally contains "adn". Lower is better;
+// MATCH_NONE means "don't show".
+export const MATCH_NONE = 99;
+export function rankMatch(normHaystack, normQuery) {
+  if (!normQuery || !normHaystack) return MATCH_NONE;
+  if (normHaystack === normQuery) return 0;                       // exact title
+  if (normHaystack.startsWith(normQuery)) return 1;               // prefix
+  if (normHaystack.includes(` ${normQuery}`)) return 2;           // word start
+  if (normHaystack.includes(normQuery)) return 3;                 // substring
+  // all tokens present in any order ("greater one" → ">one - greater than one")
+  const toks = normQuery.split(' ');
+  if (toks.every((tok) => tok && normHaystack.includes(tok))) return 4;
+  return MATCH_NONE;
+}
+
 // Separators Spotify (and people) use between collaborating artists.
 // Word-bounded on the alphabetic tokens so they don't match mid-name, e.g.
 // "x" in "Xscape", "ft" in "Daft Punk", "with" in "Bill Withers".

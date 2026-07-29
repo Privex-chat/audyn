@@ -8,7 +8,10 @@ import { DIFFICULTY_MODES, DEFAULT_DIFFICULTY } from '@/lib/difficulty';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useAuth } from '@/context/AuthContext';
 import { useLanguage } from '@/context/LanguageContext';
-import { normalizeText, normalizeLoose, matchesQuery, matchesArtist, splitArtistsRaw } from '@/lib/search';
+import { normalizeText, normalizeLoose, matchesArtist, splitArtistsRaw, rankMatch, MATCH_NONE } from '@/lib/search';
+
+// How many suggestions the dropdown shows.
+const MAX_SUGGESTIONS = 7;
 
 const BACKEND_URL = API_BASE;
 
@@ -106,12 +109,11 @@ export default function GamePage({
     setAlbumArtMap(map);
   }, [tracks]);
 
-  // Cached playlists come back without album art (the server loads it on
-  // demand). Fetch it for the WHOLE playlist pool — not just the answer
-  // tracks — because the guess dropdown searches every song. Fetching only
-  // the answers looked inconsistent AND leaked which songs were in the game
-  // (art appeared only on answer rows). Chunked, sequential, background,
-  // best-effort; art fills in progressively and the game plays fine without it.
+  // /playlist now returns stored album art inline, so this usually finds nothing
+  // to do. It still covers tracks whose art hasn't been scraped yet (keyless
+  // embed-only fetches). Never fetch art for a subset of the pool: doing so
+  // would show art only on some dropdown rows and leak which songs are in play.
+  // Chunked, sequential, background, best-effort — art is decorative.
   useEffect(() => {
     const missing = tracks
       .filter((t) => !t.album_image)
@@ -143,7 +145,7 @@ export default function GamePage({
   useEffect(() => {
     // Autocomplete pool: shuffled once so dropdown order gives nothing away.
     if (!shuffledAllTracksRef.current) {
-      shuffledAllTracksRef.current = [...tracks].sort(() => Math.random() - 0.5);
+      shuffledAllTracksRef.current = shuffleArray(tracks);
       // Loose-normalized index for forgiving dropdown surfacing (quotes,
       // dashes, accents, etc.). Song correctness is still by track id.
       searchIndexRef.current = shuffledAllTracksRef.current.map(t => ({
@@ -153,9 +155,11 @@ export default function GamePage({
       // Distinct INDIVIDUAL artists across the whole pool, so the artist
       // dropdown lists each collaborator once ("Drake", "21 Savage", "Future")
       // instead of confusing full collab strings.
+      // Walk the shuffled pool, not `tracks`, so equally-ranked artists tie-break
+      // randomly instead of by playlist position.
       const seen = new Set();
       const artistPool = [];
-      for (const t of tracks) {
+      for (const t of shuffledAllTracksRef.current) {
         for (const a of splitArtistsRaw(t.artist)) {
           const key = normalizeText(a);
           if (key && !seen.has(key)) {
@@ -589,29 +593,46 @@ export default function GamePage({
 
   const searchPool = shuffledAllTracksRef.current || tracks;
 
+  // Best matches, not the first ones found. The pool is the WHOLE playlist, so
+  // on a large one the exact title would otherwise lose its slot to incidental
+  // substring hits and look absent (issue #22). Ties keep shuffled pool order,
+  // which reveals nothing.
   const filteredItems = useMemo(() => {
     const q = normalizeLoose(guessQuery);
     if (q.length === 0) return [];
 
+    const bestOf = (scored) => scored
+      .sort((a, b) => a.rank - b.rank)
+      .slice(0, MAX_SUGGESTIONS)
+      .map((s) => s.item);
+
     if (guessMode === 'artist') {
       const pool = artistIndexRef.current || [];
-      const items = [];
+      const scored = [];
       for (const a of pool) {
-        if (matchesQuery(a.loose, q)) {
-          items.push({ artistName: a.display, artist: a.display, id: `artist:${a.key}` });
-          if (items.length >= 7) break;
-        }
+        const rank = rankMatch(a.loose, q);
+        if (rank === MATCH_NONE) continue;
+        scored.push({
+          rank,
+          item: { artistName: a.display, artist: a.display, id: `artist:${a.key}` },
+        });
       }
-      return items;
+      return bestOf(scored);
     }
 
-    return searchPool
-      .filter((t, i) => {
-        const idx = searchIndexRef.current?.[i];
-        if (!idx) return false;
-        return matchesQuery(idx.name, q) || matchesQuery(idx.artist, q);
-      })
-      .slice(0, 7);
+    const scored = [];
+    for (let i = 0; i < searchPool.length; i++) {
+      const idx = searchIndexRef.current?.[i];
+      if (!idx) continue;
+      const nameRank = rankMatch(idx.name, q);
+      const artistRank = rankMatch(idx.artist, q);
+      if (nameRank === MATCH_NONE && artistRank === MATCH_NONE) continue;
+      // A title hit outranks an artist hit of the same quality: the player is
+      // typing into a "name the song" box.
+      const rank = Math.min(nameRank * 2, artistRank * 2 + 1);
+      scored.push({ rank, item: searchPool[i] });
+    }
+    return bestOf(scored);
   }, [guessQuery, guessMode, searchPool]);
 
   const currentMultiplier = gameMode === 'ticking_away' ? getStreakMultiplier(streakCount) : 1.0;

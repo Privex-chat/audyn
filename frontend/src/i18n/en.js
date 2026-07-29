@@ -53,6 +53,8 @@ const en = {
     challengeFriend: '⚔️ Challenge a Friend',
     changePlaylist: 'Change playlist',
     playableTracks: '{count} playable tracks',
+    playableOfTotal: '{playable} of {total} tracks playable',
+    allGuessable: 'All {total} are in the guess list',
     loadingPreviews: 'Loading previews…',
     waitingPreviews: 'Previews are loading… please wait',
     previewsTimeout: 'Timed out waiting for previews. Try again in a moment.',

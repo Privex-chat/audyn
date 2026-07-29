@@ -1,4 +1,4 @@
-import { normalizeText, normalizeLoose, matchesQuery, splitArtists, splitArtistsRaw, matchesArtist } from './search';
+import { normalizeText, normalizeLoose, matchesQuery, splitArtists, splitArtistsRaw, matchesArtist, rankMatch, MATCH_NONE } from './search';
 
 describe('normalizeLoose (surfacing) elides quotes/apostrophes', () => {
   test("contractions match without the apostrophe", () => {
@@ -77,6 +77,54 @@ describe('splitArtists', () => {
     // "é" is a word char in Python's Unicode \b, so no boundary before "feat" -> no split.
     expect(splitArtists('Beyoncéfeat. Jay-Z')).toEqual(['beyoncefeat jay z']);
     expect(splitArtists('Beyoncé feat. Jay-Z')).toEqual(['beyonce', 'jay z']);
+  });
+});
+
+describe('rankMatch (dropdown ordering)', () => {
+  const rank = (hay, q) => rankMatch(normalizeLoose(hay), normalizeLoose(q));
+
+  test('agrees with matchesQuery on what surfaces at all', () => {
+    const cases = [
+      ['>one - greater than one', 'one greater than one'],
+      ['>one - greater than one', 'greater one'],
+      ['Señorita', 'senorita'],
+      ['hello world', 'zzz'],
+      ["Don't Stop Me Now", 'dont stop'],
+      ['ADN', 'adn'],
+    ];
+    for (const [hay, q] of cases) {
+      const h = normalizeLoose(hay);
+      const nq = normalizeLoose(q);
+      expect(rankMatch(h, nq) !== MATCH_NONE).toBe(matchesQuery(h, nq));
+    }
+  });
+
+  test('exact title beats prefix beats word-start beats substring', () => {
+    expect(rank('ADN', 'ADN')).toBeLessThan(rank('ADN Remix', 'ADN'));
+    expect(rank('ADN Remix', 'ADN')).toBeLessThan(rank('Mon ADN', 'ADN'));
+    expect(rank('Mon ADN', 'ADN')).toBeLessThan(rank('Badness', 'adn'));
+  });
+
+  // The issue-#22 symptom: the exact answer must outrank incidental matches so
+  // it survives the 7-row cap on a large playlist.
+  test('the exact answer outranks incidental substring hits', () => {
+    const pool = ['Badness', 'Cadence', 'Madness Reloaded', 'ADN', 'Sadness'];
+    const best = pool
+      .map((name) => ({ name, r: rank(name, 'ADN') }))
+      .filter((x) => x.r !== MATCH_NONE)
+      .sort((a, b) => a.r - b.r)[0];
+    expect(best.name).toBe('ADN');
+  });
+
+  test('non-matches and empty query are MATCH_NONE', () => {
+    expect(rank('hello world', 'zzz')).toBe(MATCH_NONE);
+    expect(rank('hello world', '')).toBe(MATCH_NONE);
+    expect(rank('', 'hello')).toBe(MATCH_NONE);
+  });
+
+  test('accent- and punctuation-forgiving like the rest of surfacing', () => {
+    expect(rank('Señorita', 'senorita')).toBe(0);
+    expect(rank("Don't Stop Me Now", 'dont stop')).toBe(1);
   });
 });
 

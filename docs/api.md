@@ -115,15 +115,15 @@ Fetch a playlist by Spotify ID or full URL.
       "id": "string",
       "name": "string",
       "artist": "string",
-      "preview_url": "string",
       "album_name": "string",
-      "album_image": "string (may be empty on first load)",
+      "album_image": "string (may be empty until backfilled)",
       "duration_ms": 0,
       "explicit": false,
       "popularity": 0
     }
   ],
   "total_tracks": 0,
+  "pool_size": 0,
   "total_in_playlist": 0,
   "skipped_no_preview": 0,
   "pending_preview_retry": 0,
@@ -131,13 +131,32 @@ Fetch a playlist by Spotify ID or full URL.
 }
 ```
 
-`album_image` is intentionally empty on first load and fetched separately via `/tracks/art`.
+`tracks` is **every** track in the playlist — it is the client's guess-autocomplete
+pool, and it is deliberately decoupled from whether a track can be *heard*. Which
+tracks can be a round is decided server-side at `POST /sessions/start` against live
+DB state, so filtering this list by playability would make any track whose preview
+arrived after the client's fetch impossible to type (issue #22).
+
+Playability is reported as counts only:
+- `pool_size` — tracks in `tracks`, i.e. the size of the autocomplete pool
+- `total_tracks` — how many of those have a preview and can currently be a round
+- `pending_preview_retry` — how many are still awaiting a preview scrape
+- `skipped_no_preview` — how many have no preview on Spotify at all
+
+`preview_url` and per-track playability flags are **not** returned: the CDN URL
+would let a client identify a clip by comparing bytes, and a per-track flag would
+let it filter the pool down to the tracks that can be answers.
+
+`fetch_complete: false` means the track *list* itself may be truncated (Spotify API
+rate-limit penalty) — it says nothing about previews, which fill in asynchronously.
 
 ---
 
 ### GET /tracks/art
 
-Fetch album art for a batch of tracks. Call this after starting a game with the selected track IDs.
+Look up album art for a batch of tracks. Serves the DB cache only — a miss means
+"not scraped yet", not "no art". The background preview fill harvests cover art
+from the same embed page it loads for previews, so misses resolve on their own.
 
 **Query params**
 - `ids` — comma-separated track IDs (max 100)
