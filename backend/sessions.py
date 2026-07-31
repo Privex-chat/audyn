@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from auth import require_user
 from database import get_conn
 from matching import matches_artist
+from preview_store import MAX_PREVIEW_RETRIES
 from scoring import DIFFICULTIES, compute_score, update_daily_streak
 from achievements import check_per_track_achievements, BADGES
 
@@ -76,10 +77,13 @@ def _is_guess_correct(guess_mode: str, req: GuessRequest, entry: dict, tid: str)
     Artist mode delegates to matching.matches_artist, the shared judge that
     scoring.py already uses. This module used to decide artist correctness with a
     local `artist.lower().split(",")`, which only understood comma-separated
-    credits. The guess dropdown, however, splits on the full separator set
-    (`, & / + × feat ft featuring with x`) and submits one of those split-out
-    names — so for any credit using a non-comma separator, every option the
-    dropdown offered was graded wrong and the track could not be answered at all.
+    credits. The guess dropdown, however, splits on the full separator set --
+    the symbols comma, ampersand, slash, plus and the multiplication sign, plus
+    the words feat/ft/featuring/with/x at word boundaries -- and submits one of
+    those split-out names, so for any credit using a non-comma separator every
+    option the dropdown offered was graded wrong and the track could not be
+    answered at all. See matching._ARTIST_SEP for the exact pattern.
+
     Keep this delegating: a second opinion on correctness is how that drifted
     apart in the first place.
     """
@@ -88,6 +92,24 @@ def _is_guess_correct(guess_mode: str, req: GuessRequest, entry: dict, tid: str)
     if guess_mode == "artist":
         return matches_artist(req.artist or "", entry.get("artist") or "")
     return bool(req.track_id) and req.track_id == tid
+
+
+def _reveal_for(tid: str, entry: dict) -> dict:
+    """What the client is told about the track once the round is over.
+
+    Reads the entry defensively, like _is_guess_correct does. `entry` is
+    deserialized JSONB whose shape has changed before now (see _META_KEYS), and
+    a KeyError here would 500 a guess the player has already committed to. Every
+    entry start_session writes carries name and artist, so this is consistency
+    rather than a live fix — but the two functions reading the same dict should
+    not disagree about whether its keys are guaranteed.
+    """
+    return {
+        "id": tid,
+        "name": entry.get("name") or "",
+        "artist": entry.get("artist") or "",
+        "album_image": entry.get("album_image") or "",
+    }
 
 
 @sessions_router.post("/start")
@@ -199,6 +221,9 @@ async def start_session(req: StartSessionRequest, user=Depends(require_user)):
                 """,
                 req.playlist_id,
             )
+            # Same retry cap the preview store and /playlist-status use: this
+            # number drives the client's "waiting for previews" retry, so it has
+            # to mean the same thing they do.
             pending_count = await conn.fetchval(
                 """
                 SELECT COUNT(*) FROM playlist_tracks pt
@@ -206,9 +231,10 @@ async def start_session(req: StartSessionRequest, user=Depends(require_user)):
                 WHERE pt.playlist_id = $1
                   AND (t.preview_url IS NULL OR t.preview_url = '')
                   AND t.preview_unavailable = FALSE
-                  AND t.preview_retry_count < 5
+                  AND t.preview_retry_count < $2
                 """,
                 req.playlist_id,
+                MAX_PREVIEW_RETRIES,
             )
             detail = {
                 "message": "None of the provided track IDs are playable",
@@ -314,12 +340,7 @@ async def submit_guess(
 
             streak = int(tracks_data.get("_streak", 0) or 0)
             game_mode = session["game_mode"]
-            reveal = {
-                "id": tid,
-                "name": entry["name"],
-                "artist": entry["artist"],
-                "album_image": entry.get("album_image", ""),
-            }
+            reveal = _reveal_for(tid, entry)
 
             if not correct and stage < max_stage:
                 # Advance the clip stage; round continues, no reveal.
@@ -545,5 +566,18 @@ if __name__ == "__main__":
     # --- skip is never correct, in either mode ---
     assert not _is_guess_correct("artist", _g(artist="Dua Lipa", skip=True), feat, "t1")
     assert not _is_guess_correct("song", _g(track_id="t1", skip=True), feat, "t1")
+
+    # --- reveal: reads the same entry dict, must agree about what's guaranteed ---
+    _entry = {"name": "Levels", "artist": "Avicii", "album_image": "http://img"}
+    assert _reveal_for("t1", _entry) == {
+        "id": "t1", "name": "Levels", "artist": "Avicii", "album_image": "http://img",
+    }
+    # A sparse or null-valued entry must still produce a serialisable reveal
+    # rather than raising after the player has already committed to the guess.
+    assert _reveal_for("t1", {}) == {"id": "t1", "name": "", "artist": "", "album_image": ""}
+    assert _reveal_for("t1", {"name": None, "artist": None, "album_image": None}) == {
+        "id": "t1", "name": "", "artist": "", "album_image": "",
+    }
+    assert _reveal_for("t1", {"name": "Levels"})["artist"] == ""
 
     print("sessions.py self-check passed")
