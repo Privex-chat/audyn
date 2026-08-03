@@ -1,0 +1,20 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-audyn_db}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set this in a root .env file (gitignored)}
+      POSTGRES_DB: ${POSTGRES_DB:-audyn}
+    ports:
+      - "127.0.0.1:5443:5432" # loopback only — 5432 already taken by infra-postgres-1
+    volumes:
+      - audyn_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-audyn_db} -d ${POSTGRES_DB:-audyn}"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  audyn_pgdata:

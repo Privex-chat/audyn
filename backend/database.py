@@ -15,7 +15,11 @@ async def init_db():
         raise RuntimeError("DATABASE_URL environment variable is required")
     _pool = await asyncpg.create_pool(
         dsn,
-        min_size=5,  # warm pool: avoids ~100ms cold-connect delays during bursts
+        # kept low: this app runs as 3 separate processes (2 API + worker),
+        # each opening min_size connections at boot — a high value here means
+        # a burst of simultaneous new-connection handshakes at startup, which
+        # has tripped Supabase pooler's auth circuit breaker before.
+        min_size=2,
         max_size=10,
         command_timeout=30,
     )

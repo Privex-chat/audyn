@@ -238,6 +238,18 @@ CREATE TABLE IF NOT EXISTS user_achievements (
 
 CREATE INDEX IF NOT EXISTS idx_user_achievements_user ON user_achievements(user_id);
 
+-- ─── Guest Activity Boost Schedule ──────────────────────────────────
+CREATE TABLE IF NOT EXISTS guest_boost_schedule (
+    day_of_week   SMALLINT NOT NULL,
+    min_guests    INT     NOT NULL DEFAULT 0,
+    max_guests    INT     NOT NULL DEFAULT 0,
+    spread_hours  REAL    NOT NULL DEFAULT 24.0,
+    enabled       BOOLEAN NOT NULL DEFAULT TRUE,
+    updated_at    TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (day_of_week),
+    CONSTRAINT guest_boost_schedule_day_of_week_check CHECK (day_of_week BETWEEN 0 AND 6)
+);
+
 -- ─── Disable Row Level Security (Supabase deployments) ──────────────
 ALTER TABLE users             DISABLE ROW LEVEL SECURITY;
 ALTER TABLE playlists         DISABLE ROW LEVEL SECURITY;
@@ -251,3 +263,4 @@ ALTER TABLE user_achievements DISABLE ROW LEVEL SECURITY;
 ALTER TABLE rooms             DISABLE ROW LEVEL SECURITY;
 ALTER TABLE album_art         DISABLE ROW LEVEL SECURITY;
 ALTER TABLE game_sessions     DISABLE ROW LEVEL SECURITY;
+ALTER TABLE guest_boost_schedule DISABLE ROW LEVEL SECURITY;

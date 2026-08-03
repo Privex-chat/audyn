@@ -87,3 +87,5 @@ android-sdk/ -e
 ecosystem.config.js
 *.bak
 /frontend/build
+audyn_backup.sql
+audyn_data.sql
